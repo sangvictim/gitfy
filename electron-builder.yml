@@ -1,0 +1,35 @@
+appId: setyo.purnomo.gitfy
+productName: Gitfy
+icon: build/icon.png
+directories:
+  output: release/${version}
+  buildResources: build
+# Everything (React, Monaco, simple-git…) is bundled by Vite into dist/ and dist-electron/,
+# so all packages are devDependencies and no node_modules are shipped inside the app.
+files:
+  - dist
+  - dist-electron
+linux:
+  target:
+    - AppImage
+  category: Development
+  icon: build/icons
+  artifactName: ${productName}-${version}.${ext}
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.png
+  artifactName: ${productName}-${version}-win-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}

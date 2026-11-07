@@ -1,0 +1,375 @@
+# Product Requirements Document — Gitfy
+
+| | |
+| --- | --- |
+| **Produk** | Gitfy — Git GUI client desktop |
+| **Versi dokumen** | 2.1 |
+| **Tanggal** | 7 November 2026 |
+| **Penulis / Pemilik produk** | Setyo (setyo@kemang.sg) |
+| **Status** | Aktif — MVP selesai sebagian, Sprint 4 berjalan |
+| **Versi aplikasi saat ini** | 0.0.1 |
+
+---
+
+## Daftar Isi
+
+1. [Ringkasan Eksekutif](#1-ringkasan-eksekutif)
+2. [Latar Belakang & Masalah](#2-latar-belakang--masalah)
+3. [Tujuan & Non-Tujuan](#3-tujuan--non-tujuan)
+4. [Target Pengguna](#4-target-pengguna)
+5. [Ruang Lingkup Fitur](#5-ruang-lingkup-fitur)
+6. [Kebutuhan Fungsional](#6-kebutuhan-fungsional)
+7. [Kebutuhan Non-Fungsional](#7-kebutuhan-non-fungsional)
+8. [Arsitektur Sistem](#8-arsitektur-sistem)
+9. [Keamanan](#9-keamanan)
+10. [Pengalaman Pengguna (UX)](#10-pengalaman-pengguna-ux)
+11. [Roadmap & Rencana Rilis](#11-roadmap--rencana-rilis)
+12. [Strategi Update & Pemeliharaan](#12-strategi-update--pemeliharaan)
+13. [Metrik Keberhasilan](#13-metrik-keberhasilan)
+14. [Risiko & Mitigasi](#14-risiko--mitigasi)
+15. [Pertanyaan Terbuka](#15-pertanyaan-terbuka)
+16. [Riwayat Revisi](#16-riwayat-revisi)
+
+---
+
+## 1. Ringkasan Eksekutif
+
+**Gitfy** adalah aplikasi desktop Git GUI client yang ringan, cepat, dan intuitif. Pengguna dapat mengelola repositori lokal, meninjau perubahan, melakukan staging dan commit, melihat riwayat dalam bentuk graph, serta berinteraksi dengan remote (GitHub, GitLab, Bitbucket) tanpa bergantung pada terminal.
+
+Gitfy dibangun dengan teknologi web modern di atas Electron, dengan Git asli di sistem sebagai mesin eksekusi. Target distribusi: **Linux x64 (AppImage)**, **Windows x64 (installer NSIS)**, dan **macOS Apple Silicon arm64 (DMG)**. Saat ini pengujian baru dilakukan di **Linux Debian / Ubuntu**; distribusi Linux lain belum diuji, dan **Windows serta macOS belum diuji sama sekali** (hanya sudah dikonfigurasi di build).
+
+**Prinsip produk:**
+
+- **Ringan dan responsif** — graph dan diff tetap lancar pada repositori besar.
+- **Transparan** — setiap aksi mencerminkan perintah Git yang sebenarnya, tanpa abstraksi yang menyembunyikan keadaan repositori.
+- **Aman secara default** — kredensial tidak pernah ditulis ke disk, dan renderer terisolasi dari sistem file.
+- **Terkendali** — pengguna memegang kendali penuh atas pembaruan dan operasi berisiko.
+
+## 2. Latar Belakang & Masalah
+
+Perintah Git di terminal sangat kuat tetapi memiliki beberapa kesulitan praktis:
+
+| Masalah | Dampak |
+| --- | --- |
+| Riwayat cabang dan merge sulit dibayangkan dari `git log` | Pengguna salah memahami posisi branch dan commit |
+| Meninjau perubahan per file/baris memerlukan beberapa perintah | Alur kerja lambat dan rawan commit yang tidak sengaja |
+| Kesalahan operasi (commit, checkout, branch) sulit dibatalkan dengan aman | Pengguna takut bereksperimen |
+| Konfigurasi SSH/HTTPS membingungkan, terutama bagi pemula | Fetch/push gagal dengan pesan yang tidak jelas |
+
+Klien GUI yang tersedia umumnya berat, berbayar, atau tidak tersedia di Linux. Gitfy mengisi celah tersebut dengan klien yang ringan, gratis, dan berfokus pada Linux terlebih dahulu.
+
+## 3. Tujuan & Non-Tujuan
+
+### Tujuan
+
+1. Menyediakan alur kerja Git harian (status → stage → commit → push/pull) dalam satu jendela.
+2. Menampilkan riwayat seluruh branch sebagai graph yang mudah dibaca dan dapat dicari.
+3. Menyediakan **undo / redo** yang aman untuk operasi yang dilakukan melalui Gitfy.
+4. Menangani autentikasi remote (SSH dan HTTPS) tanpa terminal.
+5. Mendistribusikan aplikasi sebagai paket mandiri (AppImage) dengan pembaruan yang dikendalikan pengguna.
+
+### Non-Tujuan (di luar cakupan saat ini)
+
+- Menggantikan terminal untuk operasi Git tingkat lanjut yang jarang dipakai.
+- Hosting repositori, code review, atau manajemen issue/pull request.
+- Pembaruan otomatis di latar belakang (lihat bagian 12).
+- Editor kode penuh — Monaco hanya dipakai sebagai penampil diff.
+- Penyimpanan kredensial ke disk.
+
+## 4. Target Pengguna
+
+| Persona | Kebutuhan utama | Cara Gitfy membantu |
+| --- | --- | --- |
+| **Pengembang harian** | Alur commit cepat, diff jelas, berpindah repo dengan mudah | Tab multi-repo, panel WIP, diff side-by-side/inline |
+| **Pengembang pemula** | Memahami Git secara visual, takut salah perintah | Commit graph, undo / redo, dialog konfirmasi |
+| **Pengguna Linux** | Klien GUI native yang ringan dan tidak berbayar | Paket AppImage, tanpa dependensi runtime tambahan |
+
+## 5. Ruang Lingkup Fitur
+
+Legenda status: ✅ selesai · 🚧 sedang dikerjakan · ⏳ direncanakan
+
+### 5.1 Fitur MVP
+
+| ID | Modul | Fitur | Status |
+| --- | --- | --- | --- |
+| REPO-1 | Repositori | Open repository (dialog pemilihan folder) | ✅ |
+| REPO-2 | Repositori | Clone dari URL remote | ✅ |
+| REPO-3 | Repositori | Init repositori baru | ✅ |
+| REPO-4 | Repositori | Tab multi-repo, disimpan dan dipulihkan saat start | ✅ |
+| REPO-5 | Repositori | Daftar repositori terbaru | ✅ |
+| STG-1 | Staging | Status real-time (modified / added / deleted / untracked) | ✅ |
+| STG-2 | Staging | Stage / unstage file | ✅ |
+| STG-3 | Staging | Diff viewer Monaco, split dan inline | ✅ |
+| CMT-1 | Commit | Form commit (summary + description) | ✅ |
+| CMT-2 | Commit | Riwayat commit (penulis, tanggal, hash) | ✅ |
+| CMT-3 | Commit | Commit graph seluruh branch | ✅ |
+| CMT-4 | Commit | Panel detail commit dan diff per commit | ✅ |
+| CMT-5 | Commit | Pencarian commit (`Ctrl+F`) | ✅ |
+| BRN-1 | Branch | Daftar branch lokal, remote, stash, dan tag | ✅ |
+| BRN-2 | Branch | Switch branch, termasuk checkout branch remote | ✅ |
+| BRN-3 | Branch | Create dan delete branch | ✅ |
+| RMT-1 | Remote | Fetch all, pull (ff / ff-only), push | ✅ |
+| RMT-2 | Remote | Manajemen kunci SSH dan uji koneksi | ✅ |
+| RMT-3 | Remote | Dialog passphrase / kredensial HTTPS (askpass) | ✅ |
+| UND-1 | Undo / Redo | Undo / redo commit, checkout, create/delete branch, pull | ✅ |
+| REL-1 | Rilis | Paket Linux AppImage x64 via `electron-builder` | ✅ |
+| REL-2 | Rilis | Konfigurasi build Windows x64 (NSIS) dan macOS arm64 (DMG) | ✅ dikonfigurasi, ❌ belum diuji |
+| CNF-1 | Konflik | UI penyelesaian merge conflict | 🚧 |
+| UPD-1 | Pembaruan | Tombol manual "Check for Updates" | ⏳ |
+
+### 5.2 Fitur Lanjutan (pasca-MVP)
+
+| Sprint | Fokus | Fitur utama |
+| --- | --- | --- |
+| 5 | Stash dan tag | Buat / apply / pop / drop stash; buat, hapus, dan push tag; discard changes dengan konfirmasi |
+| 6 | Penulisan ulang riwayat | Rebase (abort / continue), cherry-pick, revert, reset (soft / mixed / hard), amend commit |
+| 7 | Inspeksi mendalam | Riwayat per file, blame, staging per hunk / baris, ringkasan diff, perbandingan branch, filter graph |
+| 8 | Remote dan manajemen repo | Kelola remote, opsi push (set upstream, `--force-with-lease`), pull rebase, submodule, konfigurasi per repo, `.gitignore` |
+| Later | Ekspansi | Code signing dan CI rilis Windows / macOS, verifikasi perilaku lintas OS, tema terang/gelap, command palette, tautan pull request |
+
+## 6. Kebutuhan Fungsional
+
+### 6.1 Manajemen Repositori
+
+- **FR-1** Sistem harus dapat membuka folder yang berisi repositori Git yang valid dan menolak folder yang bukan repositori dengan pesan yang jelas.
+- **FR-2** Sistem harus dapat meng-clone repositori dari URL HTTPS atau SSH ke direktori pilihan pengguna, dengan indikator progres.
+- **FR-3** Setiap repositori terbuka ditampilkan pada tab sendiri. Membuka repositori yang sudah terbuka mengaktifkan tabnya.
+- **FR-4** Tab yang terbuka disimpan dan dipulihkan saat aplikasi dijalankan lagi. Repositori yang tidak ditemukan dilewati dengan notifikasi.
+
+### 6.2 Status, Staging, dan Diff
+
+- **FR-5** Status file diperbarui setiap 3 detik saat jendela terlihat, dan segera saat jendela kembali fokus.
+- **FR-6** Pengguna dapat stage / unstage satu file, beberapa file, atau semua file.
+- **FR-7** Diff ditampilkan dengan Monaco Editor dalam mode **side-by-side** atau **inline**, memenuhi lebar penuh jendela, dan dapat ditutup dengan `Esc`.
+
+### 6.3 Commit dan Riwayat
+
+- **FR-8** Commit memerlukan summary; description bersifat opsional.
+- **FR-9** Perubahan yang belum di-commit muncul sebagai baris `// WIP` di puncak graph. Mengkliknya membuka panel staging.
+- **FR-10** Graph menampilkan seluruh branch, badge branch / tag / remote, dan menggunakan virtualisasi agar tetap lancar pada riwayat panjang.
+- **FR-11** Mengklik commit membuka panel detail (penulis, tanggal, hash, daftar file). Mengklik file membuka diff-nya.
+- **FR-12** Pencarian commit menandai hasil di graph; `Enter` / `Shift+Enter` berpindah antar hasil.
+
+### 6.4 Branch
+
+- **FR-13** Sidebar menampilkan branch lokal, remote, stash, dan tag. Mengklik item melompat ke commit-nya.
+- **FR-14** Pengguna dapat switch, membuat (dari posisi saat ini), dan menghapus branch. Penghapusan branch yang belum di-merge memerlukan konfirmasi eksplisit.
+
+### 6.5 Remote
+
+- **FR-15** Toolbar menyediakan Fetch All, Pull (fast-forward jika memungkinkan / fast-forward only), dan Push.
+- **FR-16** Semua perintah jaringan berjalan tanpa terminal interaktif. Perintah dihentikan setelah 2 menit tanpa output.
+- **FR-17** SSH dapat memakai ssh-agent sistem, kunci yang dipilih, atau kunci ED25519 yang dibuat Gitfy (disimpan di folder data aplikasi; `~/.ssh` tidak pernah diubah). Pengguna dapat menyalin public key dan menguji koneksi ke GitHub, GitLab, dan Bitbucket.
+- **FR-18** Host baru diterima saat pertama digunakan; perubahan host key ditolak.
+- **FR-19** Passphrase dan kredensial HTTPS diminta lewat dialog bawaan dan hanya dapat diingat di memori selama sesi.
+
+### 6.6 Undo / Redo
+
+- **FR-20** Operasi berikut yang dilakukan melalui Gitfy dicatat per repositori dan dapat di-undo / redo: commit, checkout branch (termasuk fast-forward), create / delete branch, dan pull.
+- **FR-21** Sebelum undo / redo, sistem memverifikasi bahwa repositori masih persis seperti ditinggalkan operasi tersebut; jika tidak, aksi ditolak dengan penjelasan.
+- **FR-22** Push menghapus riwayat undo, karena commit yang sudah di-push bersifat bersama.
+
+### 6.7 Penyelesaian Konflik (Sprint 4)
+
+- **FR-23** Setelah merge atau pull yang menghasilkan konflik, sistem menampilkan daftar file konflik.
+- **FR-24** Pengguna dapat memilih versi sendiri (ours), versi lawan (theirs), atau menyunting manual, lalu menandai file sebagai selesai.
+- **FR-25** Pengguna dapat membatalkan merge (abort) kapan saja.
+
+## 7. Kebutuhan Non-Fungsional
+
+| Kategori | Kebutuhan |
+| --- | --- |
+| **Performa** | Startup < 3 detik; scroll graph tetap lancar (60 fps) pada ≥ 50.000 commit; status refresh tidak memblokir UI |
+| **Keandalan** | Kegagalan perintah Git tidak membuat aplikasi crash; error ditampilkan sebagai notifikasi yang dapat ditindaklanjuti |
+| **Keamanan** | Lihat bagian 9 |
+| **Kompatibilitas** | Git 2.23+ (memakai `git switch`); Linux x64 (AppImage), Windows x64 (NSIS), macOS arm64 (DMG) |
+| **Portabilitas** | Kode main process hanya memakai API Node.js agar siap untuk build lintas platform |
+| **Maintainability** | Struktur modular per fitur, TypeScript strict, pemeriksaan tipe (`typecheck`) wajib lulus sebelum build |
+| **Privasi** | Tidak ada telemetri dan tidak ada koneksi jaringan selain perintah Git dan pengecekan pembaruan yang dipicu pengguna |
+| **Aksesibilitas** | Operasi utama dapat dijangkau dengan keyboard (lihat bagian 10) |
+
+## 8. Arsitektur Sistem
+
+### 8.1 Tech Stack
+
+| Lapisan | Teknologi |
+| --- | --- |
+| Desktop wrapper | Electron (Node.js + Chromium) |
+| Frontend | React, TypeScript, Tailwind CSS |
+| State management | Zustand |
+| Diff viewer | Monaco Editor (`@monaco-editor/react`) |
+| Daftar virtual | TanStack Virtual |
+| Git engine | `simple-git` di atas Git CLI sistem (dengan `raw()` untuk perintah tanpa helper) |
+| Komunikasi proses | Electron IPC (`ipcMain`, `contextBridge`) |
+| Build dan paket | Vite, `electron-builder` (AppImage, NSIS, DMG) |
+| Package manager | Bun |
+
+### 8.2 Pembagian Tanggung Jawab
+
+- **Main process (Node):** satu-satunya tempat yang menjalankan perintah Git dan mengakses sistem file. Mengelola daftar repositori yang diizinkan, riwayat undo / redo, pengaturan, dan helper askpass.
+- **Preload:** mengekspos API terketik `window.gitfy` melalui `contextBridge`.
+- **Renderer (React):** hanya menampilkan UI dan memanggil bridge. Tidak memiliki akses langsung ke sistem file atau Node.
+
+Semua handler IPC mengembalikan `{ ok, data } | { ok, error }` alih-alih melempar exception melewati bridge.
+
+### 8.3 Struktur Folder
+
+```text
+gitfy/
+├── electron/                      # Main process (Node.js & Git)
+│   ├── main.ts                    # Window, CSP, registrasi handler IPC
+│   ├── preload.ts                 # Jembatan aman (contextBridge)
+│   └── services/
+│       ├── repo.service.ts        # Repo aktif, daftar terbaru, open / init / clone
+│       ├── git.service.ts         # Status, stage, diff, commit, log, branch, remote
+│       ├── history.service.ts     # Riwayat undo / redo per repositori
+│       ├── settings.service.ts    # Preferensi global (settings.json)
+│       ├── askpass.service.ts     # Helper SSH_ASKPASS via unix socket privat
+│       └── net.ts                 # Environment dan timeout perintah jaringan
+│
+├── src/                           # Renderer (React & UI)
+│   ├── components/                # UI bersama (Button, Modal, Toaster, DiffViewer, ...)
+│   ├── features/                  # Modul fitur terisolasi
+│   │   ├── repo/                  # Welcome screen, clone
+│   │   ├── commit/                # Graph, detail, pencarian, form commit
+│   │   ├── staging/               # Panel WIP, daftar file
+│   │   ├── diff/                  # Diff lebar penuh
+│   │   ├── branch/                # Sidebar refs, dialog branch
+│   │   └── settings/              # Preferensi dan SSH
+│   ├── layouts/                   # AppLayout, Header, TabBar, Sidebar
+│   ├── services/                  # Klien IPC terketik
+│   ├── store/                     # Zustand (repo, UI, toast)
+│   ├── types/                     # Tipe bersama main dan renderer
+│   ├── App.tsx
+│   └── main.tsx
+│
+├── electron-builder.yml           # Target paket: linux AppImage x64, win NSIS x64, mac DMG arm64
+├── package.json
+└── tsconfig.json
+```
+
+### 8.4 Penyimpanan Data
+
+State UI hanya di memori dan kosong pada setiap peluncuran. Data persisten (repositori terbaru, tab terbuka, preferensi) disimpan di folder data pengguna: `~/.config/Gitfy` (Linux), `%APPDATA%\Gitfy` (Windows), atau `~/Library/Application Support/Gitfy` (macOS). Mode pengembangan di Linux memakai `~/.config/Gitfy-dev` agar data pengembangan tidak bercampur dengan rilis.
+
+### 8.5 Target Build
+
+| OS | Arsitektur | Format | Artefak |
+| --- | --- | --- | --- |
+| Linux | x64 | AppImage | `Gitfy-<versi>.AppImage` |
+| Windows | x64 | Installer NSIS | `Gitfy-<versi>-win-x64.exe` |
+| macOS | Apple Silicon (`arm64`) | DMG | `Gitfy-<versi>-mac-arm64.dmg` |
+
+**Status pengujian:** Linux baru diuji di Debian / Ubuntu. Distribusi lain (Fedora, Arch, dll.) belum diuji. Windows dan macOS belum diuji.
+
+Catatan: DMG hanya dapat dibuat di macOS, dan build Windows dari Linux memerlukan Wine, sehingga build rilis sebaiknya memakai CI dengan matriks OS. Build belum ditandatangani (code signing), sehingga Windows SmartScreen dan macOS Gatekeeper akan menampilkan peringatan.
+
+## 9. Keamanan
+
+| Kontrol | Penjelasan |
+| --- | --- |
+| Isolasi renderer | `contextIsolation` aktif, `nodeIntegration` nonaktif, renderer di-sandbox |
+| Allowlist repositori | Main process hanya menerima repositori yang dibuka lewat open / init / clone, dan melupakannya saat tab ditutup |
+| Validasi path | Setiap path file divalidasi agar tetap berada di dalam repositori |
+| Validasi input | Hash commit dan nama branch divalidasi sebelum diteruskan ke Git |
+| Kredensial | Passphrase dan password hanya di memori selama sesi, tidak pernah ditulis ke disk |
+| Askpass | Helper `SSH_ASKPASS` berkomunikasi lewat unix socket privat dengan token acak |
+| SSH host keys | Host baru diterima saat pertama digunakan; host key yang berubah ditolak |
+| Kunci SSH | Kunci hasil generate disimpan di folder data aplikasi; `~/.ssh` tidak pernah dimodifikasi |
+| CSP | Content Security Policy diterapkan di window utama |
+| Timeout jaringan | Perintah dihentikan setelah 2 menit tanpa output |
+
+## 10. Pengalaman Pengguna (UX)
+
+### 10.1 Layout
+
+- **Header:** toolbar Undo · Redo · Pull · Push · Branch, pencarian commit, dan akses Preferences.
+- **Tab bar:** satu tab per repositori; tab kosong menampilkan welcome screen.
+- **Sidebar kiri:** refs (local, remote, stash, tag).
+- **Area utama:** commit graph; diff menggantikan graph saat sebuah file dibuka.
+- **Panel kanan:** staging (saat baris WIP dipilih) atau detail commit.
+
+### 10.2 Pintasan Keyboard
+
+| Pintasan | Aksi |
+| --- | --- |
+| `Ctrl+T` | Tab baru |
+| `Ctrl+Tab` | Berpindah antar tab |
+| Klik tengah pada tab | Tutup tab |
+| `Ctrl+F` | Cari commit |
+| `Enter` / `Shift+Enter` | Hasil pencarian berikutnya / sebelumnya |
+| `Esc` | Tutup diff dan kembali ke graph |
+
+### 10.3 Prinsip Interaksi
+
+- Operasi yang merusak (hapus branch, discard, hard reset) selalu meminta konfirmasi.
+- Kegagalan ditampilkan sebagai toast dengan pesan yang dapat ditindaklanjuti, bukan stack trace.
+- Operasi jaringan menampilkan status berjalan dan tidak membekukan UI.
+
+## 11. Roadmap & Rencana Rilis
+
+| Sprint | Cakupan | Status |
+| --- | --- | --- |
+| 1 | Setup proyek (Electron, React, TypeScript, Tailwind), IPC aman, layout dasar | ✅ Selesai |
+| 2 | Open / init / clone, status real-time, stage / unstage, diff Monaco | ✅ Selesai |
+| 3 | Commit, riwayat dan graph, manajemen branch | ✅ Selesai |
+| 3+ | Fetch / pull / push, undo / redo, SSH, tab, pencarian commit | ✅ Selesai |
+| 4 | UI merge conflict, polesan error, manual "Check for Updates" | 🚧 Berjalan |
+| 5 | Stash dan tag, discard changes | ⏳ |
+| 6 | Rebase, cherry-pick, revert, reset, amend | ⏳ |
+| 7 | Blame, riwayat file, staging per hunk, perbandingan branch | ⏳ |
+| 8 | Manajemen remote, opsi push, submodule, konfigurasi repo | ⏳ |
+| Later | macOS / Windows, tema, command palette, tautan PR | ⏳ |
+
+**Kriteria selesai (Definition of Done) tiap sprint:** `bun run typecheck` lulus, fitur diuji manual pada repositori nyata (termasuk repositori kosong dan tanpa remote), dan README serta dokumen ini diperbarui.
+
+## 12. Strategi Update & Pemeliharaan
+
+Untuk menjaga stabilitas dan memberi kontrol penuh kepada pengguna:
+
+- Gitfy **tidak** mengunduh atau memasang pembaruan secara diam-diam di latar belakang.
+- Menu **Settings / About** menyediakan tombol **"Check for Updates"**.
+- Saat diklik, aplikasi memeriksa versi terbaru di **GitHub Releases**. Jika ada, aplikasi menampilkan catatan rilis dan menawarkan pilihan kepada pengguna untuk mengunduh dan memasangnya secara manual.
+- Pengecekan pembaruan adalah satu-satunya koneksi non-Git yang dibuat aplikasi, dan hanya dipicu oleh pengguna.
+
+## 13. Metrik Keberhasilan
+
+| Metrik | Target |
+| --- | --- |
+| Waktu dari membuka repo hingga graph tampil (repo ≤ 10.000 commit) | < 2 detik |
+| Waktu startup aplikasi | < 3 detik |
+| Alur status → stage → commit tanpa terminal | Dapat diselesaikan sepenuhnya di Gitfy |
+| Fetch / pull / push dengan SSH atau HTTPS tanpa terminal | Berhasil tanpa konfigurasi manual di luar Gitfy |
+| Operasi yang dapat di-undo tanpa merusak repositori | 100% dari operasi yang tercatat |
+| Ukuran paket AppImage | Dipantau tiap rilis; tidak ada regresi tanpa alasan |
+
+## 14. Risiko & Mitigasi
+
+| Risiko | Dampak | Mitigasi |
+| --- | --- | --- |
+| Repositori sangat besar memperlambat graph | UI tersendat | Virtualisasi daftar, pemuatan bertahap, layout graph dihitung terpisah |
+| Undo merusak perubahan yang dibuat di luar Gitfy | Kehilangan data | Verifikasi keadaan repositori sebelum undo; tolak jika berbeda; `reset --keep` bukan `--hard` |
+| Perbedaan versi Git di sistem pengguna | Perintah gagal | Persyaratan minimum Git 2.23+; pengecekan versi saat start |
+| Kebocoran kredensial | Insiden keamanan | Hanya di memori, socket privat dengan token, tidak ada log kredensial |
+| Perintah jaringan menggantung | UI tampak macet | Tanpa prompt terminal, timeout 2 menit tanpa output |
+| Penyelesaian konflik salah | Kode rusak | Opsi abort selalu tersedia; konfirmasi sebelum menandai selesai |
+| Ketergantungan pada `simple-git` | Fitur terbatas | Gunakan `raw()` sebagai cadangan untuk perintah tanpa helper |
+| Hanya Debian / Ubuntu yang diuji; Windows dan macOS belum diuji sama sekali (mis. helper askpass berbasis unix socket di Windows) | Fitur remote bisa gagal di Windows | Uji menyeluruh di Windows / macOS; siapkan alternatif named pipe; kode main process hanya memakai API Node.js |
+| Build belum ditandatangani | Peringatan keamanan OS saat instalasi | Siapkan sertifikat code signing dan notarization macOS pada pipeline rilis |
+
+## 15. Pertanyaan Terbuka
+
+1. Apakah graph perlu mendukung pemfilteran per branch / penulis sejak Sprint 4, atau ditunda ke Sprint 7?
+2. Apakah rebase interaktif masuk dalam Sprint 6 atau dipisahkan menjadi sprint tersendiri?
+3. Format distribusi tambahan di Linux (deb, rpm, Flatpak) — apakah diperlukan selain AppImage?
+4. Apakah perlu integrasi opsional dengan API GitHub / GitLab (pull request), atau cukup tautan?
+5. Lisensi yang akan dipakai saat repositori dipublikasikan.
+
+## 16. Riwayat Revisi
+
+| Versi | Tanggal | Perubahan |
+| --- | --- | --- |
+| 1.0 | — | Draf awal MVP: visi, tech stack, struktur folder, 5 modul inti, sprint 1–4 |
+| 1.1 | — | Menambahkan strategi pembaruan manual (Check for Updates) |
+| 2.1 | 7 November 2026 | Menambahkan target build Windows x64 dan macOS arm64, lokasi data per OS, status pengujian per platform (Debian / Ubuntu saja), serta risiko lintas platform |
+| 2.0 | 7 November 2026 | Ditulis ulang: tujuan dan non-tujuan, persona, status fitur, kebutuhan fungsional dan non-fungsional, keamanan, UX, roadmap sprint 4–8, metrik, risiko, pertanyaan terbuka |
