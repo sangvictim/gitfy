@@ -13,6 +13,8 @@ const REFS_W = 210
 /** Lanes shown by default before the user widens the column */
 const DEFAULT_MAX_LANES = 8
 const GRAPH_W_KEY = 'gitfy.graphWidth.v2'
+/** Never narrower than this, so the "Graph" header label and its resize handle stay readable even with a single lane */
+const GRAPH_MIN_W = 76
 
 function saveGraphWidth(w: number) {
   try {
@@ -67,7 +69,7 @@ export function GraphView() {
   const fullW = graphWidthFor(lanes)
   // User-chosen width (drag the header edge); never wider than needed
   const [userW, setUserW] = useState<number | null>(loadGraphWidth)
-  const minW = graphWidthFor(1)
+  const minW = Math.max(graphWidthFor(1), GRAPH_MIN_W)
   const graphW = Math.max(minW, Math.min(fullW, userW ?? graphWidthFor(Math.min(lanes, DEFAULT_MAX_LANES))))
 
   const startResize = (e: React.PointerEvent) => {
