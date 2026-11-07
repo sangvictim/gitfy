@@ -78,6 +78,7 @@ interface RepoState extends Session {
 
   checkout: (name: string, remote?: boolean) => Promise<void>
   createBranch: (name: string, checkout: boolean) => Promise<boolean>
+  addRemote: (name: string, url: string) => Promise<boolean>
   deleteBranch: (name: string, force: boolean) => Promise<boolean>
 
   fetchAll: () => Promise<void>
@@ -433,6 +434,21 @@ export const useRepoStore = create<RepoState>((set, get) => {
     },
 
     // ---- remote -------------------------------------------------------------
+    addRemote: async (name, url) => {
+      const a = active()
+      if (!a) return false
+      const ok = await attempt(() => a.git.addRemote(name, url).then(() => true))
+      if (ok) {
+        toast.success(`Added remote ${name.trim()}`)
+        // Show it right away; the reload below then replaces this with git's own list
+        const cur = sessionOf(a.tabId)?.branches
+        if (cur && !cur.remotes?.some((r) => r.name === name.trim())) {
+          patch(a.tabId, { branches: { ...cur, remotes: [...(cur.remotes ?? []), { name: name.trim(), url: url.trim() }] } })
+        }
+      }
+      await loadBranches(a.tabId)
+      return !!ok
+    },
     fetchAll: async () => {
       const a = active()
       if (!a) return

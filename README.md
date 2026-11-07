@@ -58,6 +58,7 @@ Browse history, stage changes, review diffs, commit, and sync with your remotes 
 **Branches, tags and stashes**
 - Refs sidebar listing local branches, remote branches, stashes and tags. Click an entry to jump to its commit.
 - Switch, create and delete branches.
+- **Add a remote** (such as `origin`) with the **+** button in the sidebar's Remote section. Configured remotes are listed even before their first fetch.
 
 **Remotes**
 - Fetch all, pull (fast-forward if possible, or fast-forward only) and push from the toolbar.

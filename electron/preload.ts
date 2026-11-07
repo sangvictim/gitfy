@@ -88,6 +88,7 @@ const api = {
       invoke<void>('git:createBranch', repo, name, checkout),
     deleteBranch: (repo: string, name: string, force?: boolean) =>
       invoke<void>('git:deleteBranch', repo, name, force),
+    addRemote: (repo: string, name: string, url: string) => invoke<void>('git:addRemote', repo, name, url),
     fetchAll: (repo: string) => invoke<void>('git:fetchAll', repo),
     pull: (repo: string, mode?: PullMode) => invoke<PullResult>('git:pull', repo, mode),
     push: (repo: string) => invoke<PushResult>('git:push', repo),

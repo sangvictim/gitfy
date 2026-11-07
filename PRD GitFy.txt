@@ -108,6 +108,7 @@ Legenda status: ✅ selesai · 🚧 sedang dikerjakan · ⏳ direncanakan
 | BRN-1 | Branch | Daftar branch lokal, remote, stash, dan tag | ✅ |
 | BRN-2 | Branch | Switch branch, termasuk checkout branch remote | ✅ |
 | BRN-3 | Branch | Create dan delete branch | ✅ |
+| RMT-0 | Remote | Tambah remote (mis. `origin`) dari sidebar, dengan validasi nama dan URL | ✅ |
 | RMT-1 | Remote | Fetch all, pull (ff / ff-only), push | ✅ |
 | RMT-2 | Remote | Manajemen kunci SSH dan uji koneksi | ✅ |
 | RMT-3 | Remote | Dialog passphrase / kredensial HTTPS (askpass) | ✅ |

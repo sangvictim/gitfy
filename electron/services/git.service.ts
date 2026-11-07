@@ -15,6 +15,7 @@ import type {
   PullMode,
   PullResult,
   PushResult,
+  RemoteInfo,
   RepoStatus,
   StashRef,
   TagRef,
@@ -468,7 +469,22 @@ export async function getBranches(repo: string): Promise<BranchList> {
       current = null // detached HEAD
     }
   }
-  return { current, local, remote, tags, stashes: await getStashes(repo) }
+  return { current, local, remote, remotes: await getRemotes(repo), tags, stashes: await getStashes(repo) }
+}
+
+async function getRemotes(repo: string): Promise<RemoteInfo[]> {
+  try {
+    const out = await git(repo).raw(['remote', '-v'])
+    const map = new Map<string, string>()
+    for (const line of out.split('\n')) {
+      // origin<TAB>git@github.com:me/repo.git (fetch)
+      const m = /^(\S+)\t(.+) \((fetch|push)\)$/.exec(line.trim().replace(/\s+\t/, '\t'))
+      if (m && m[3] === 'fetch') map.set(m[1], m[2])
+    }
+    return [...map.entries()].map(([name, url]) => ({ name, url }))
+  } catch {
+    return []
+  }
 }
 
 async function getStashes(repo: string): Promise<StashRef[]> {
@@ -592,8 +608,26 @@ export async function deleteBranch(repo: string, name: string, force = false) {
 }
 
 // ---------------------------------------------------------------------------
-// Remote: fetch / pull / push
+// Remote: add / fetch / pull / push
 // ---------------------------------------------------------------------------
+
+export async function addRemote(repo: string, name: string, url: string) {
+  repoService.require(repo)
+  name = typeof name === 'string' ? name.trim() : ''
+  url = typeof url === 'string' ? url.trim() : ''
+  if (!name) throw new Error('Remote name is required')
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name.endsWith('.lock') || name.includes('..')) {
+    throw new Error(`"${name}" is not a valid remote name`)
+  }
+  if (!url) throw new Error('Remote URL is required')
+  // Reject option injection, whitespace/control characters and transport helpers like ext::<command>
+  if (url.startsWith('-') || /[\s\x00-\x1f]/.test(url) || /^[A-Za-z][A-Za-z0-9+.-]*::/.test(url)) {
+    throw new Error('That does not look like a valid remote URL')
+  }
+  const existing = await getRemotes(repo)
+  if (existing.some((r) => r.name === name)) throw new Error(`A remote named "${name}" already exists`)
+  await git(repo).raw(['remote', 'add', '--', name, url])
+}
 
 function netGit(repo: string): SimpleGit {
   return netGitAt(repoService.require(repo).path)

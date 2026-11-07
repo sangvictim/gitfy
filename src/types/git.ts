@@ -100,10 +100,19 @@ export interface StashRef {
   commit: string
 }
 
+/** A configured remote (git remote -v) */
+export interface RemoteInfo {
+  name: string
+  /** Fetch URL */
+  url: string
+}
+
 export interface BranchList {
   current: string | null
   local: Branch[]
   remote: Branch[]
+  /** All configured remotes, including ones that have no fetched branches yet */
+  remotes: RemoteInfo[]
   tags: TagRef[]
   stashes: StashRef[]
 }

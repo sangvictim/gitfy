@@ -4,16 +4,18 @@ import { cx } from '../../lib/format'
 import { useRepoStore } from '../../store/repo.store'
 import { toast } from '../../store/toast.store'
 import type { Branch } from '../../types/git'
+import { AddRemoteModal } from './AddRemoteModal'
 import { DeleteBranchModal } from './DeleteBranchModal'
 
 type SectionId = 'local' | 'remote' | 'stashes' | 'tags'
 
 export function RefsSidebar() {
-  const { branches, checkout, busy, focusCommit, select, selected } = useRepoStore()
+  const { branches, checkout, busy, focusCommit, select, selected, fetchAll } = useRepoStore()
   const [filter, setFilter] = useState('')
   const [open, setOpen] = useState<Record<SectionId, boolean>>({ local: false, remote: false, stashes: false, tags: false })
   const [collapsedRemotes, setCollapsedRemotes] = useState<Set<string>>(new Set())
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [addingRemote, setAddingRemote] = useState(false)
 
   const q = filter.trim().toLowerCase()
   const has = (s: string) => s.toLowerCase().includes(q)
@@ -26,12 +28,14 @@ export function RefsSidebar() {
   // Group remote branches by remote name: origin/feature/x -> { origin: [feature/x] }
   const remoteGroups = useMemo(() => {
     const groups = new Map<string, Branch[]>()
+    // Configured remotes show up even before anything was fetched from them
+    for (const r of branches?.remotes ?? []) if (has(r.name)) groups.set(r.name, [])
     for (const b of remote) {
       const [name] = b.name.split('/')
       groups.set(name, [...(groups.get(name) ?? []), b])
     }
     return [...groups.entries()]
-  }, [remote])
+  }, [remote, branches?.remotes, q]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggle = (id: SectionId) => setOpen((o) => ({ ...o, [id]: !o[id] }))
   const forced = q.length > 0 // while filtering, show every section expanded
@@ -80,10 +84,38 @@ export function RefsSidebar() {
           ))}
         </Section>
 
-        <Section id="remote" icon="cloud" label="Remote" count={remote.length} open={forced || open.remote} onToggle={toggle}>
-          {remoteGroups.length === 0 && <Empty>No remotes</Empty>}
+        <Section
+          id="remote"
+          icon="cloud"
+          label="Remote"
+          count={remote.length}
+          open={forced || open.remote}
+          onToggle={toggle}
+          headerAction={
+            <button
+              onClick={() => {
+                setOpen((o) => ({ ...o, remote: true }))
+                setAddingRemote(true)
+              }}
+              aria-label="Add remote"
+              title="Add remote"
+              className="mr-1.5 rounded p-1 text-muted hover:bg-panel-2 hover:text-fg"
+            >
+              <Icon name="plus" size={13} />
+            </button>
+          }
+        >
+          {remoteGroups.length === 0 && (
+            <Empty>
+              No remotes{' '}
+              <button onClick={() => setAddingRemote(true)} className="text-accent hover:underline">
+                Add remote
+              </button>
+            </Empty>
+          )}
           {remoteGroups.map(([name, list]) => {
             const collapsed = !forced && collapsedRemotes.has(name)
+            const url = branches?.remotes.find((r) => r.name === name)?.url
             return (
               <div key={name}>
                 <button
@@ -99,8 +131,23 @@ export function RefsSidebar() {
                 >
                   <Icon name="chevron" size={11} className={cx('text-muted transition-transform', !collapsed && 'rotate-90')} />
                   <Icon name="cloud" size={13} className="text-muted" />
-                  <span className="truncate">{name}</span>
+                  <span className="truncate" title={url}>
+                    {name}
+                  </span>
                 </button>
+                {!collapsed && url && (
+                  <p className="truncate pl-10 pr-2 pb-0.5 text-[11px] text-muted/80" title={url}>
+                    {url}
+                  </p>
+                )}
+                {!collapsed && list.length === 0 && (
+                  <Empty indent>
+                    No branches yet.{' '}
+                    <button disabled={!!busy} onClick={() => fetchAll()} className="text-accent hover:underline disabled:opacity-50">
+                      Fetch
+                    </button>
+                  </Empty>
+                )}
                 {!collapsed &&
                   list.map((b) => (
                     <Row
@@ -149,6 +196,12 @@ export function RefsSidebar() {
         </Section>
       </div>
 
+      {addingRemote && (
+        <AddRemoteModal
+          onAdded={() => setOpen((o) => ({ ...o, remote: true }))}
+          onClose={() => setAddingRemote(false)}
+        />
+      )}
       {deleting && <DeleteBranchModal name={deleting} onClose={() => setDeleting(null)} />}
     </aside>
   )
@@ -161,6 +214,7 @@ function Section({
   count,
   open,
   onToggle,
+  headerAction,
   children,
 }: {
   id: SectionId
@@ -169,20 +223,24 @@ function Section({
   count: number
   open: boolean
   onToggle: (id: SectionId) => void
+  headerAction?: React.ReactNode
   children: React.ReactNode
 }) {
   return (
     <section className="border-b border-border/60">
-      <button
-        onClick={() => onToggle(id)}
-        aria-expanded={open}
-        className="flex h-8 w-full items-center gap-2 px-2 text-left text-[11.5px] font-semibold tracking-wide text-muted uppercase hover:text-fg"
-      >
-        <Icon name="chevron" size={12} className={cx('transition-transform', open && 'rotate-90')} />
-        <Icon name={icon} size={14} />
-        <span className="flex-1">{label}</span>
-        <span className="font-normal text-muted">{count}</span>
-      </button>
+      <div className="flex items-center">
+        <button
+          onClick={() => onToggle(id)}
+          aria-expanded={open}
+          className="flex h-8 min-w-0 flex-1 items-center gap-2 px-2 text-left text-[11.5px] font-semibold tracking-wide text-muted uppercase hover:text-fg"
+        >
+          <Icon name="chevron" size={12} className={cx('transition-transform', open && 'rotate-90')} />
+          <Icon name={icon} size={14} />
+          <span className="flex-1">{label}</span>
+          <span className="font-normal text-muted">{count}</span>
+        </button>
+        {headerAction}
+      </div>
       {open && <div className="pb-1.5">{children}</div>}
     </section>
   )
@@ -261,6 +319,6 @@ function RowAction({
   )
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="py-1 pl-7 text-xs text-muted">{children}</p>
+function Empty({ children, indent }: { children: React.ReactNode; indent?: boolean }) {
+  return <p className={cx('py-1 text-xs text-muted', indent ? 'pl-10' : 'pl-7')}>{children}</p>
 }
