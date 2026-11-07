@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Produk** | Gitfy — Git GUI client desktop |
-| **Versi dokumen** | 2.1 |
+| **Versi dokumen** | 2.2 |
 | **Tanggal** | 7 November 2026 |
 | **Penulis / Pemilik produk** | Setyo (setyo@kemang.sg) |
 | **Status** | Aktif — MVP selesai sebagian, Sprint 4 berjalan |
@@ -108,10 +108,11 @@ Legenda status: ✅ selesai · 🚧 sedang dikerjakan · ⏳ direncanakan
 | BRN-1 | Branch | Daftar branch lokal, remote, stash, dan tag | ✅ |
 | BRN-2 | Branch | Switch branch, termasuk checkout branch remote | ✅ |
 | BRN-3 | Branch | Create dan delete branch | ✅ |
-| RMT-0 | Remote | Tambah remote (mis. `origin`) dari sidebar, dengan validasi nama dan URL | ✅ |
 | RMT-1 | Remote | Fetch all, pull (ff / ff-only), push | ✅ |
 | RMT-2 | Remote | Manajemen kunci SSH dan uji koneksi | ✅ |
 | RMT-3 | Remote | Dialog passphrase / kredensial HTTPS (askpass) | ✅ |
+| RMT-4 | Remote | Tambah remote (mis. `origin`) dari sidebar, dengan validasi nama dan URL | ✅ |
+| RMT-5 | Remote | Ubah remote (ganti URL, mis. HTTPS ke SSH, atau ganti nama) dari sidebar | ✅ |
 | UND-1 | Undo / Redo | Undo / redo commit, checkout, create/delete branch, pull | ✅ |
 | REL-1 | Rilis | Paket Linux AppImage x64 via `electron-builder` | ✅ |
 | REL-2 | Rilis | Konfigurasi build Windows x64 (NSIS) dan macOS arm64 (DMG) | ✅ dikonfigurasi, ❌ belum diuji |
@@ -161,8 +162,10 @@ Legenda status: ✅ selesai · 🚧 sedang dikerjakan · ⏳ direncanakan
 - **FR-15** Toolbar menyediakan Fetch All, Pull (fast-forward jika memungkinkan / fast-forward only), dan Push.
 - **FR-16** Semua perintah jaringan berjalan tanpa terminal interaktif. Perintah dihentikan setelah 2 menit tanpa output.
 - **FR-17** SSH dapat memakai ssh-agent sistem, kunci yang dipilih, atau kunci ED25519 yang dibuat Gitfy (disimpan di folder data aplikasi; `~/.ssh` tidak pernah diubah). Pengguna dapat menyalin public key dan menguji koneksi ke GitHub, GitLab, dan Bitbucket.
-- **FR-18** Host baru diterima saat pertama digunakan; perubahan host key ditolak.
+- **FR-18** Pengaturan SSH hanya berlaku untuk URL remote berbentuk SSH; untuk URL `https://`, Git meminta username dan token, bukan password akun. Host baru diterima saat pertama digunakan; perubahan host key ditolak.
 - **FR-19** Passphrase dan kredensial HTTPS diminta lewat dialog bawaan dan hanya dapat diingat di memori selama sesi.
+- **FR-26** Sidebar menyediakan tombol untuk menambah remote (nama dan URL). Remote yang sudah dikonfigurasi selalu tampil, termasuk yang belum pernah di-fetch, lengkap dengan URL dan pintasan Fetch.
+- **FR-27** Pengguna dapat mengubah nama dan / atau URL remote dari sidebar (mis. dari HTTPS ke SSH). Nama dan URL divalidasi di main process: tidak boleh diawali `-`, tidak boleh mengandung spasi atau karakter kontrol, dan transport helper seperti `ext::` ditolak. Mengganti nama juga memindahkan branch remote-tracking-nya.
 
 ### 6.6 Undo / Redo
 
@@ -372,5 +375,6 @@ Untuk menjaga stabilitas dan memberi kontrol penuh kepada pengguna:
 | --- | --- | --- |
 | 1.0 | — | Draf awal MVP: visi, tech stack, struktur folder, 5 modul inti, sprint 1–4 |
 | 1.1 | — | Menambahkan strategi pembaruan manual (Check for Updates) |
+| 2.2 | 7 November 2026 | Menambahkan tambah / ubah remote dari sidebar (RMT-4, RMT-5, FR-26 dan FR-27), perbaikan unstage pada repositori tanpa commit, dan catatan bahwa SSH hanya berlaku untuk URL SSH |
 | 2.1 | 7 November 2026 | Menambahkan target build Windows x64 dan macOS arm64, lokasi data per OS, status pengujian per platform (Debian / Ubuntu saja), serta risiko lintas platform |
 | 2.0 | 7 November 2026 | Ditulis ulang: tujuan dan non-tujuan, persona, status fitur, kebutuhan fungsional dan non-fungsional, keamanan, UX, roadmap sprint 4–8, metrik, risiko, pertanyaan terbuka |

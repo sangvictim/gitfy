@@ -3,9 +3,9 @@ import { Icon, type IconName } from '../../components/Icon'
 import { cx } from '../../lib/format'
 import { useRepoStore } from '../../store/repo.store'
 import { toast } from '../../store/toast.store'
-import type { Branch } from '../../types/git'
-import { AddRemoteModal } from './AddRemoteModal'
+import type { Branch, RemoteInfo } from '../../types/git'
 import { DeleteBranchModal } from './DeleteBranchModal'
+import { RemoteModal } from './RemoteModal'
 
 type SectionId = 'local' | 'remote' | 'stashes' | 'tags'
 
@@ -16,6 +16,7 @@ export function RefsSidebar() {
   const [collapsedRemotes, setCollapsedRemotes] = useState<Set<string>>(new Set())
   const [deleting, setDeleting] = useState<string | null>(null)
   const [addingRemote, setAddingRemote] = useState(false)
+  const [editingRemote, setEditingRemote] = useState<RemoteInfo | null>(null)
 
   const q = filter.trim().toLowerCase()
   const has = (s: string) => s.toLowerCase().includes(q)
@@ -118,23 +119,30 @@ export function RefsSidebar() {
             const url = branches?.remotes.find((r) => r.name === name)?.url
             return (
               <div key={name}>
-                <button
-                  onClick={() =>
-                    setCollapsedRemotes((s) => {
-                      const n = new Set(s)
-                      if (n.has(name)) n.delete(name)
-                      else n.add(name)
-                      return n
-                    })
-                  }
-                  className="flex h-7 w-full items-center gap-1.5 pl-5 text-left hover:bg-panel-2"
-                >
-                  <Icon name="chevron" size={11} className={cx('text-muted transition-transform', !collapsed && 'rotate-90')} />
-                  <Icon name="cloud" size={13} className="text-muted" />
-                  <span className="truncate" title={url}>
-                    {name}
-                  </span>
-                </button>
+                <div className="group flex h-7 items-center hover:bg-panel-2">
+                  <button
+                    onClick={() =>
+                      setCollapsedRemotes((s) => {
+                        const n = new Set(s)
+                        if (n.has(name)) n.delete(name)
+                        else n.add(name)
+                        return n
+                      })
+                    }
+                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-5 text-left"
+                  >
+                    <Icon name="chevron" size={11} className={cx('text-muted transition-transform', !collapsed && 'rotate-90')} />
+                    <Icon name="cloud" size={13} className="text-muted" />
+                    <span className="truncate" title={url}>
+                      {name}
+                    </span>
+                  </button>
+                  {url !== undefined && (
+                    <div className="flex pr-1.5">
+                      <RowAction onClick={() => setEditingRemote({ name, url })} icon="pencil" label={`Edit remote ${name}`} />
+                    </div>
+                  )}
+                </div>
                 {!collapsed && url && (
                   <p className="truncate pl-10 pr-2 pb-0.5 text-[11px] text-muted/80" title={url}>
                     {url}
@@ -197,11 +205,9 @@ export function RefsSidebar() {
       </div>
 
       {addingRemote && (
-        <AddRemoteModal
-          onAdded={() => setOpen((o) => ({ ...o, remote: true }))}
-          onClose={() => setAddingRemote(false)}
-        />
+        <RemoteModal onDone={() => setOpen((o) => ({ ...o, remote: true }))} onClose={() => setAddingRemote(false)} />
       )}
+      {editingRemote && <RemoteModal edit={editingRemote} onClose={() => setEditingRemote(null)} />}
       {deleting && <DeleteBranchModal name={deleting} onClose={() => setDeleting(null)} />}
     </aside>
   )

@@ -229,6 +229,9 @@ function registerIpc() {
 
   // Remote
   handle('git:addRemote', (repo: string, name: string, url: string) => gitService.addRemote(repo, name, url))
+  handle('git:updateRemote', (repo: string, oldName: string, name: string, url: string) =>
+    gitService.updateRemote(repo, oldName, name, url),
+  )
   handle('git:fetchAll', (repo: string) => gitService.fetchAll(repo))
   handle('git:pull', (repo: string, mode?: PullMode) => gitService.pull(repo, mode === 'ff-only' ? 'ff-only' : 'ff'))
   handle('git:push', (repo: string) => gitService.push(repo))

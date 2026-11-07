@@ -59,9 +59,10 @@ Browse history, stage changes, review diffs, commit, and sync with your remotes 
 - Refs sidebar listing local branches, remote branches, stashes and tags. Click an entry to jump to its commit.
 - Switch, create and delete branches.
 - **Add a remote** (such as `origin`) with the **+** button in the sidebar's Remote section. Configured remotes are listed even before their first fetch.
+- **Edit a remote:** click the pencil next to a remote to change its URL (for example HTTPS to SSH) or rename it. Renaming also renames its remote-tracking branches.
 
 **Remotes**
-- Fetch all, pull (fast-forward if possible, or fast-forward only) and push from the toolbar.
+- Add and edit remotes from the sidebar, then fetch all, pull (fast-forward if possible, or fast-forward only) and push from the toolbar.
 - Built-in SSH key management and credential prompts. See [Working with remotes](#working-with-remotes).
 
 **Undo / redo**
@@ -136,6 +137,8 @@ Configured in [`electron-builder.yml`](electron-builder.yml).
 ## Working with remotes
 
 Network commands (fetch, pull, push, clone) run without a terminal, so they never hang on an invisible prompt.
+
+> **Using SSH?** Make sure the remote URL is an SSH one (`git@github.com:user/repo.git`). With an `https://` URL, Git asks for a username and a token instead and the SSH settings are not used. You can switch a remote to SSH with the pencil button in the sidebar.
 
 - **SSH:** configure it under **Preferences → SSH** (the ⚙ icon in the header, or on the welcome screen).
   - Use the system `ssh-agent`, or pick an existing key, or generate a new ED25519 key. Generated keys are stored in Gitfy's data folder, and `~/.ssh` is never modified.

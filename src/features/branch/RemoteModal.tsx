@@ -3,36 +3,47 @@ import { Button } from '../../components/Button'
 import { Field, Input } from '../../components/Input'
 import { Modal } from '../../components/Modal'
 import { useRepoStore } from '../../store/repo.store'
+import type { RemoteInfo } from '../../types/git'
 
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
-export function AddRemoteModal({ onClose, onAdded }: { onClose: () => void; onAdded?: () => void }) {
-  const { addRemote, branches } = useRepoStore()
+/** Add a remote, or edit one when `edit` is given (rename and / or change its URL) */
+export function RemoteModal({
+  edit,
+  onClose,
+  onDone,
+}: {
+  edit?: RemoteInfo
+  onClose: () => void
+  onDone?: () => void
+}) {
+  const { addRemote, updateRemote, branches } = useRepoStore()
   const remotes = branches?.remotes ?? []
-  const [name, setName] = useState(remotes.some((r) => r.name === 'origin') ? '' : 'origin')
-  const [url, setUrl] = useState('')
+  const [name, setName] = useState(edit?.name ?? (remotes.some((r) => r.name === 'origin') ? '' : 'origin'))
+  const [url, setUrl] = useState(edit?.url ?? '')
   const [submitting, setSubmitting] = useState(false)
 
   const n = name.trim()
   const u = url.trim()
-  const exists = remotes.some((r) => r.name === n)
+  const exists = remotes.some((r) => r.name === n && r.name !== edit?.name)
   const nameInvalid = n.length > 0 && !NAME_RE.test(n)
-  const canSubmit = n && u && !exists && !nameInvalid && !/\s/.test(u) && !submitting
+  const unchanged = !!edit && n === edit.name && u === edit.url
+  const canSubmit = n && u && !exists && !nameInvalid && !/\s/.test(u) && !unchanged && !submitting
 
   const submit = async () => {
     if (!canSubmit) return
     setSubmitting(true)
-    const ok = await addRemote(n, u)
+    const ok = edit ? await updateRemote(edit.name, n, u) : await addRemote(n, u)
     setSubmitting(false)
     if (ok) {
-      onAdded?.()
+      onDone?.()
       onClose()
     }
   }
 
   return (
     <Modal
-      title="Add remote"
+      title={edit ? `Edit remote “${edit.name}”` : 'Add remote'}
       onClose={onClose}
       footer={
         <>
@@ -40,7 +51,7 @@ export function AddRemoteModal({ onClose, onAdded }: { onClose: () => void; onAd
             Cancel
           </Button>
           <Button variant="primary" disabled={!canSubmit} onClick={submit}>
-            Add remote
+            {edit ? 'Save' : 'Add remote'}
           </Button>
         </>
       }
@@ -59,7 +70,9 @@ export function AddRemoteModal({ onClose, onAdded }: { onClose: () => void; onAd
               ? `A remote named "${n}" already exists`
               : nameInvalid
                 ? 'Use letters, numbers, ".", "_" or "-"'
-                : 'Usually "origin"'
+                : edit
+                  ? 'Renaming also renames its remote-tracking branches'
+                  : 'Usually "origin"'
           }
         >
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="origin" />

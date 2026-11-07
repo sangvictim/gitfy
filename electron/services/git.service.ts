@@ -611,22 +611,48 @@ export async function deleteBranch(repo: string, name: string, force = false) {
 // Remote: add / fetch / pull / push
 // ---------------------------------------------------------------------------
 
-export async function addRemote(repo: string, name: string, url: string) {
-  repoService.require(repo)
-  name = typeof name === 'string' ? name.trim() : ''
-  url = typeof url === 'string' ? url.trim() : ''
-  if (!name) throw new Error('Remote name is required')
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name.endsWith('.lock') || name.includes('..')) {
-    throw new Error(`"${name}" is not a valid remote name`)
+function cleanRemoteName(name: unknown): string {
+  const n = typeof name === 'string' ? name.trim() : ''
+  if (!n) throw new Error('Remote name is required')
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(n) || n.endsWith('.lock') || n.includes('..')) {
+    throw new Error(`"${n}" is not a valid remote name`)
   }
-  if (!url) throw new Error('Remote URL is required')
+  return n
+}
+
+function cleanRemoteUrl(url: unknown): string {
+  const u = typeof url === 'string' ? url.trim() : ''
+  if (!u) throw new Error('Remote URL is required')
   // Reject option injection, whitespace/control characters and transport helpers like ext::<command>
-  if (url.startsWith('-') || /[\s\x00-\x1f]/.test(url) || /^[A-Za-z][A-Za-z0-9+.-]*::/.test(url)) {
+  if (u.startsWith('-') || /[\s\x00-\x1f]/.test(u) || /^[A-Za-z][A-Za-z0-9+.-]*::/.test(u)) {
     throw new Error('That does not look like a valid remote URL')
   }
+  return u
+}
+
+export async function addRemote(repo: string, name: string, url: string) {
+  repoService.require(repo)
+  const n = cleanRemoteName(name)
+  const u = cleanRemoteUrl(url)
   const existing = await getRemotes(repo)
-  if (existing.some((r) => r.name === name)) throw new Error(`A remote named "${name}" already exists`)
-  await git(repo).raw(['remote', 'add', '--', name, url])
+  if (existing.some((r) => r.name === n)) throw new Error(`A remote named "${n}" already exists`)
+  await git(repo).raw(['remote', 'add', '--', n, u])
+}
+
+/** Rename a remote and/or change its URL */
+export async function updateRemote(repo: string, oldName: string, name: string, url: string) {
+  repoService.require(repo)
+  const from = cleanRemoteName(oldName)
+  const to = cleanRemoteName(name)
+  const u = cleanRemoteUrl(url)
+  const existing = await getRemotes(repo)
+  const current = existing.find((r) => r.name === from)
+  if (!current) throw new Error(`Remote "${from}" no longer exists`)
+  if (to !== from && existing.some((r) => r.name === to)) throw new Error(`A remote named "${to}" already exists`)
+  const g = git(repo)
+  // Change the URL first: if it fails nothing has been renamed yet
+  if (u !== current.url) await g.raw(['remote', 'set-url', '--', from, u])
+  if (to !== from) await g.raw(['remote', 'rename', '--', from, to])
 }
 
 function netGit(repo: string): SimpleGit {

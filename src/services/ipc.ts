@@ -59,6 +59,7 @@ export function gitFor(repo: string) {
     deleteBranch: (name: string, force?: boolean) => unwrap(g().deleteBranch(repo, name, force)),
 
     addRemote: (name: string, url: string) => unwrap(g().addRemote(repo, name, url)),
+    updateRemote: (oldName: string, name: string, url: string) => unwrap(g().updateRemote(repo, oldName, name, url)),
     fetchAll: () => unwrap(g().fetchAll(repo)),
     pull: (mode?: PullMode) => unwrap(g().pull(repo, mode)),
     push: () => unwrap(g().push(repo)),

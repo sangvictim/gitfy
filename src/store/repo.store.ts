@@ -79,6 +79,7 @@ interface RepoState extends Session {
   checkout: (name: string, remote?: boolean) => Promise<void>
   createBranch: (name: string, checkout: boolean) => Promise<boolean>
   addRemote: (name: string, url: string) => Promise<boolean>
+  updateRemote: (oldName: string, name: string, url: string) => Promise<boolean>
   deleteBranch: (name: string, force: boolean) => Promise<boolean>
 
   fetchAll: () => Promise<void>
@@ -434,6 +435,15 @@ export const useRepoStore = create<RepoState>((set, get) => {
     },
 
     // ---- remote -------------------------------------------------------------
+    updateRemote: async (oldName, name, url) => {
+      const a = active()
+      if (!a) return false
+      const ok = await attempt(() => a.git.updateRemote(oldName, name, url).then(() => true))
+      if (ok) toast.success(`Updated remote ${name.trim()}`)
+      // Renaming moves refs/remotes/<old>/* too, so reload everything (graph badges included)
+      await loadAll(a.tabId)
+      return !!ok
+    },
     addRemote: async (name, url) => {
       const a = active()
       if (!a) return false
