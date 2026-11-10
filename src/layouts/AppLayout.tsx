@@ -4,6 +4,9 @@ import { CommitPanel } from '../features/commit/CommitPanel'
 import { GraphView } from '../features/commit/GraphView'
 import { ConflictResolver } from '../features/conflict/ConflictResolver'
 import { OperationBanner } from '../features/conflict/OperationBanner'
+import { BlameView } from '../features/inspect/BlameView'
+import { CompareView } from '../features/inspect/CompareView'
+import { FileHistoryView } from '../features/inspect/FileHistoryView'
 import { DiffPanel } from '../features/diff/DiffPanel'
 import { WipPanel } from '../features/staging/WipPanel'
 import { useRepoStore } from '../store/repo.store'
@@ -38,6 +41,12 @@ export function AppLayout() {
           <div className="min-h-0 flex-1">
             {openDiff?.kind === 'conflict' ? (
               <ConflictResolver key={openDiff.path} path={openDiff.path} />
+            ) : openDiff?.kind === 'history' ? (
+              <FileHistoryView key={openDiff.path} path={openDiff.path} />
+            ) : openDiff?.kind === 'blame' ? (
+              <BlameView key={`${openDiff.path}@${openDiff.rev ?? ''}`} path={openDiff.path} rev={openDiff.rev} />
+            ) : openDiff?.kind === 'compare' ? (
+              <CompareView key={`${openDiff.base}…${openDiff.head}`} base={openDiff.base} head={openDiff.head} />
             ) : openDiff ? (
               <DiffPanel target={openDiff} />
             ) : (

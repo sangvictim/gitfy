@@ -5,7 +5,17 @@ import { askpass } from './services/askpass.service'
 import { history } from './services/history.service'
 import { repoService } from './services/repo.service'
 import { settingsService } from './services/settings.service'
-import type { AskpassRequest, ConflictResolution, IpcResult, OpenTabs, PullMode, ResetMode } from '../src/types/git'
+import type {
+  AskpassRequest,
+  ConflictResolution,
+  IpcResult,
+  LineSelection,
+  LogFilter,
+  OpenTabs,
+  PullMode,
+  PushOptions,
+  ResetMode,
+} from '../src/types/git'
 
 // Layout after build:
 // ├─ dist/            renderer (index.html)
@@ -212,7 +222,9 @@ function registerIpc() {
   handle('git:commit', (repo: string, summary: string, description?: string, newBranch?: string) =>
     gitService.commit(repo, summary, description, typeof newBranch === 'string' ? newBranch : undefined),
   )
-  handle('git:log', (repo: string, limit?: number) => gitService.getLog(repo, limit))
+  handle('git:log', (repo: string, limit?: number, filter?: Partial<LogFilter>) =>
+    gitService.getLog(repo, typeof limit === 'number' ? limit : undefined, filter && typeof filter === 'object' ? filter : undefined),
+  )
   handle('git:getCommit', (repo: string, hash: string) => gitService.getCommit(repo, hash))
   handle('git:commitFiles', (repo: string, hash: string) => gitService.getCommitFiles(repo, hash))
   handle('git:commitFileDiff', (repo: string, hash: string, file: string, from?: string) =>
@@ -232,9 +244,31 @@ function registerIpc() {
   handle('git:updateRemote', (repo: string, oldName: string, name: string, url: string) =>
     gitService.updateRemote(repo, oldName, name, url),
   )
-  handle('git:fetchAll', (repo: string) => gitService.fetchAll(repo))
-  handle('git:pull', (repo: string, mode?: PullMode) => gitService.pull(repo, mode === 'ff-only' ? 'ff-only' : 'ff'))
-  handle('git:push', (repo: string) => gitService.push(repo))
+  handle('git:removeRemote', (repo: string, name: string) => gitService.removeRemote(repo, name))
+  handle('git:fetchAll', (repo: string, prune?: boolean) => gitService.fetchAll(repo, prune === true))
+  handle('git:pull', (repo: string, mode?: PullMode) =>
+    gitService.pull(repo, mode === 'ff-only' || mode === 'rebase' ? mode : 'ff'),
+  )
+  handle('git:push', (repo: string, opts?: PushOptions) =>
+    gitService.push(repo, {
+      force: opts?.force === true,
+      tags: opts?.tags === true,
+      remote: typeof opts?.remote === 'string' ? opts.remote : undefined,
+    }),
+  )
+
+  // Repository management
+  handle('git:submodules', (repo: string) => gitService.listSubmodules(repo))
+  handle('git:updateSubmodules', (repo: string, path?: string) =>
+    gitService.updateSubmodules(repo, typeof path === 'string' ? path : undefined),
+  )
+  handle('git:lfsInfo', (repo: string) => gitService.lfsInfo(repo))
+  handle('git:identity', (repo: string) => gitService.getIdentity(repo))
+  handle('git:setIdentity', (repo: string, name: string, email: string) => gitService.setIdentity(repo, name, email))
+  handle('git:readGitignore', (repo: string) => gitService.readGitignore(repo))
+  handle('git:writeGitignore', (repo: string, content: string) => gitService.writeGitignore(repo, content))
+  handle('git:addToGitignore', (repo: string, pattern: string) => gitService.addToGitignore(repo, pattern))
+  handle('git:checkIgnore', (repo: string, file: string) => gitService.checkIgnore(repo, file))
 
   // Merge & conflicts
   handle('git:merge', (repo: string, from: string, noFastForward?: boolean) =>
@@ -248,6 +282,20 @@ function registerIpc() {
     gitService.continueOperation(repo, typeof message === 'string' ? message : undefined),
   )
   handle('git:abortOperation', (repo: string) => gitService.abortOperation(repo))
+
+  // Inspection
+  handle('git:fileHistory', (repo: string, file: string) => gitService.fileHistory(repo, file))
+  handle('git:blame', (repo: string, file: string, rev?: string) =>
+    gitService.blame(repo, file, typeof rev === 'string' ? rev : undefined),
+  )
+  handle('git:applyLines', (repo: string, file: string, staged: boolean, sel: LineSelection) =>
+    gitService.applyLines(repo, file, staged === true, sel),
+  )
+  handle('git:compare', (repo: string, base: string, head: string) => gitService.compareRefs(repo, base, head))
+  handle('git:compareFileDiff', (repo: string, base: string, head: string, file: string, from?: string) =>
+    gitService.compareFileDiff(repo, base, head, file, typeof from === 'string' ? from : undefined),
+  )
+  handle('git:authors', (repo: string) => gitService.getAuthors(repo))
 
   // History rewriting
   handle('git:rewriteInfo', (repo: string, base: string) => gitService.rewriteInfo(repo, base))

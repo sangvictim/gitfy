@@ -4,6 +4,7 @@ import { cx, relativeTime } from '../../lib/format'
 import { commitMatches } from '../../lib/search'
 import { useRepoStore } from '../../store/repo.store'
 import type { Commit, CommitRef } from '../../types/git'
+import { GraphFilter } from './GraphFilter'
 import { computeGraph, graphColor, WIP_HASH, type GraphRow as GraphRowLayout } from './graph'
 import { GraphCell, graphWidthFor, ROW_H } from './GraphCell'
 import { groupRefs, RefBadgeView, type RefBadge } from './RefBadges'
@@ -42,13 +43,19 @@ export function GraphView() {
   const focusRequest = useRepoStore((s) => s.focusRequest)
   const search = useRepoStore((s) => s.search)
   const changeCount = useRepoStore((s) => (s.status?.staged.length ?? 0) + (s.status?.unstaged.length ?? 0))
+  const logFilter = useRepoStore((s) => s.logFilter)
+  const setLogFilter = useRepoStore((s) => s.setLogFilter)
+  const currentBranch = useRepoStore((s) => s.status?.branch ?? null)
+  const filtered = !!logFilter.branch || !!logFilter.author
+  // The working copy belongs to the checked-out branch: hide it while looking at another one
+  const showWip = changeCount > 0 && (!logFilter.branch || logFilter.branch === currentBranch)
   const listRef = useRef<HTMLDivElement>(null)
 
   const headHash = useMemo(() => commits.find((c) => c.refs.some(isHeadRef))?.hash, [commits])
 
   // Uncommitted changes appear as a virtual commit on top of HEAD
   const rows: Commit[] = useMemo(() => {
-    if (changeCount === 0) return commits
+    if (!showWip) return commits
     const wip: Commit = {
       hash: WIP_HASH,
       shortHash: '',
@@ -62,7 +69,7 @@ export function GraphView() {
       refs: [],
     }
     return [wip, ...commits]
-  }, [commits, changeCount, headHash])
+  }, [commits, showWip, headHash])
 
   const graph = useMemo(() => computeGraph(rows), [rows])
   const lanes = useMemo(() => Math.max(1, ...graph.map((r) => r.width)), [graph])
@@ -169,6 +176,20 @@ export function GraphView() {
     else if (b.remote) checkout(b.full ?? b.label, true)
   }, [])
 
+  if (rows.length === 0 && filtered) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-muted">
+        <p>No commits match the filter.</p>
+        <div className="flex items-center gap-2 text-[11px]">
+          <GraphFilter />
+        </div>
+        <button onClick={() => setLogFilter({ branch: null, author: null })} className="text-xs text-accent hover:underline">
+          Show everything
+        </button>
+      </div>
+    )
+  }
+
   if (rows.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-1 text-muted">
@@ -197,7 +218,10 @@ export function GraphView() {
             title="Drag to resize · double-click to fit all lanes"
           />
         </span>
-        <span className="border-l border-border px-3">Commit message</span>
+        <span className="flex h-full min-w-0 items-center justify-between gap-2 border-l border-border px-3">
+          <span className="truncate">Commit message</span>
+          <GraphFilter />
+        </span>
       </div>
 
       <div

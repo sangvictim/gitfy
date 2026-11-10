@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Button } from '../../components/Button'
 import { Field, Input } from '../../components/Input'
+import { ConfirmModal } from '../../components/ConfirmModal'
 import { Modal } from '../../components/Modal'
 import { useRepoStore } from '../../store/repo.store'
 import type { RemoteInfo } from '../../types/git'
@@ -17,7 +18,8 @@ export function RemoteModal({
   onClose: () => void
   onDone?: () => void
 }) {
-  const { addRemote, updateRemote, branches } = useRepoStore()
+  const { addRemote, updateRemote, removeRemote, branches } = useRepoStore()
+  const [confirmRemove, setConfirmRemove] = useState(false)
   const remotes = branches?.remotes ?? []
   const [name, setName] = useState(edit?.name ?? (remotes.some((r) => r.name === 'origin') ? '' : 'origin'))
   const [url, setUrl] = useState(edit?.url ?? '')
@@ -47,6 +49,16 @@ export function RemoteModal({
       onClose={onClose}
       footer={
         <>
+          {edit && (
+            <Button
+              variant="ghost"
+              className="mr-auto text-danger! hover:bg-danger/10!"
+              disabled={submitting}
+              onClick={() => setConfirmRemove(true)}
+            >
+              Remove remote
+            </Button>
+          )}
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
@@ -82,6 +94,24 @@ export function RemoteModal({
         </Field>
         <button type="submit" hidden />
       </form>
+      {confirmRemove && edit && (
+        <ConfirmModal
+          title={`Remove remote “${edit.name}”`}
+          confirmLabel="Remove"
+          danger
+          onConfirm={async () => {
+            const ok = await removeRemote(edit.name)
+            if (ok) onClose()
+            return ok
+          }}
+          onClose={() => setConfirmRemove(false)}
+        >
+          <p className="text-[13px]">
+            Gitfy stops knowing about <span className="font-mono">{edit.url}</span>. Its remote branches disappear from the
+            sidebar and branches tracking it lose their upstream. Nothing is deleted on the server.
+          </p>
+        </ConfirmModal>
+      )}
     </Modal>
   )
 }

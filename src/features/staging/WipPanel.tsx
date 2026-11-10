@@ -8,7 +8,7 @@ import { ConflictList } from '../conflict/ConflictList'
 import { FileList } from './FileList'
 
 export function WipPanel() {
-  const { status, select, openDiff, setOpenDiff, stage, unstage, stageAll, unstageAll, discard } = useRepoStore()
+  const { status, select, openDiff, setOpenDiff, stage, unstage, stageAll, unstageAll, discard, ignore } = useRepoStore()
   const [discarding, setDiscarding] = useState<FileChange[] | null>(null)
   const total = new Set([...(status?.staged ?? []), ...(status?.unstaged ?? [])].map((f) => f.path)).size
   const branch = status?.detached ? 'detached HEAD' : (status?.branch ?? 'HEAD')
@@ -41,6 +41,7 @@ export function WipPanel() {
         onToggle={(f) => toggle(f, false)}
         onToggleAll={stageAll}
         onDiscard={setDiscarding}
+        onIgnore={(f) => ignore(f.path)}
       />
       <FileList
         title="Staged Files"

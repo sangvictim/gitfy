@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AskpassRequest,
+  BlameResult,
+  CompareResult,
+  FileHistoryEntry,
+  LineSelection,
+  LogFilter,
   BranchList,
   CheckoutResult,
   Commit,
@@ -11,8 +16,13 @@ import type {
   HistoryState,
   MergeResult,
   OperationKind,
+  IgnoreCheck,
+  LfsInfo,
   PullMode,
   PullResult,
+  PushOptions,
+  RepoIdentity,
+  SubmoduleInfo,
   PushResult,
   IpcResult,
   OpenTabs,
@@ -87,7 +97,7 @@ const api = {
       invoke<DiffContent>('git:fileDiff', repo, file, staged, from),
     commit: (repo: string, summary: string, description?: string, newBranch?: string) =>
       invoke<string>('git:commit', repo, summary, description, newBranch),
-    log: (repo: string, limit?: number) => invoke<Commit[]>('git:log', repo, limit),
+    log: (repo: string, limit?: number, filter?: Partial<LogFilter>) => invoke<Commit[]>('git:log', repo, limit, filter),
     getCommit: (repo: string, hash: string) => invoke<Commit>('git:getCommit', repo, hash),
     commitFiles: (repo: string, hash: string) => invoke<CommitFile[]>('git:commitFiles', repo, hash),
     commitFileDiff: (repo: string, hash: string, file: string, from?: string) =>
@@ -102,9 +112,19 @@ const api = {
     addRemote: (repo: string, name: string, url: string) => invoke<void>('git:addRemote', repo, name, url),
     updateRemote: (repo: string, oldName: string, name: string, url: string) =>
       invoke<void>('git:updateRemote', repo, oldName, name, url),
-    fetchAll: (repo: string) => invoke<void>('git:fetchAll', repo),
+    fetchAll: (repo: string, prune?: boolean) => invoke<void>('git:fetchAll', repo, prune),
+    removeRemote: (repo: string, name: string) => invoke<void>('git:removeRemote', repo, name),
     pull: (repo: string, mode?: PullMode) => invoke<PullResult>('git:pull', repo, mode),
-    push: (repo: string) => invoke<PushResult>('git:push', repo),
+    push: (repo: string, opts?: PushOptions) => invoke<PushResult>('git:push', repo, opts),
+    submodules: (repo: string) => invoke<SubmoduleInfo[]>('git:submodules', repo),
+    updateSubmodules: (repo: string, path?: string) => invoke<void>('git:updateSubmodules', repo, path),
+    lfsInfo: (repo: string) => invoke<LfsInfo>('git:lfsInfo', repo),
+    identity: (repo: string) => invoke<RepoIdentity>('git:identity', repo),
+    setIdentity: (repo: string, name: string, email: string) => invoke<void>('git:setIdentity', repo, name, email),
+    readGitignore: (repo: string) => invoke<string>('git:readGitignore', repo),
+    writeGitignore: (repo: string, content: string) => invoke<void>('git:writeGitignore', repo, content),
+    addToGitignore: (repo: string, pattern: string) => invoke<void>('git:addToGitignore', repo, pattern),
+    checkIgnore: (repo: string, file: string) => invoke<IgnoreCheck>('git:checkIgnore', repo, file),
     merge: (repo: string, from: string, noFastForward?: boolean) =>
       invoke<MergeResult>('git:merge', repo, from, noFastForward),
     conflict: (repo: string, file: string) => invoke<ConflictDetail>('git:conflict', repo, file),
@@ -113,6 +133,14 @@ const api = {
     continueOperation: (repo: string, message?: string) =>
       invoke<RepoOperation | null>('git:continueOperation', repo, message),
     abortOperation: (repo: string) => invoke<OperationKind>('git:abortOperation', repo),
+    fileHistory: (repo: string, file: string) => invoke<FileHistoryEntry[]>('git:fileHistory', repo, file),
+    blame: (repo: string, file: string, rev?: string) => invoke<BlameResult>('git:blame', repo, file, rev),
+    applyLines: (repo: string, file: string, staged: boolean, sel: LineSelection) =>
+      invoke<void>('git:applyLines', repo, file, staged, sel),
+    compare: (repo: string, base: string, head: string) => invoke<CompareResult>('git:compare', repo, base, head),
+    compareFileDiff: (repo: string, base: string, head: string, file: string, from?: string) =>
+      invoke<DiffContent>('git:compareFileDiff', repo, base, head, file, from),
+    authors: (repo: string) => invoke<string[]>('git:authors', repo),
     rewriteInfo: (repo: string, base: string) => invoke<RewriteInfo>('git:rewriteInfo', repo, base),
     commitRelation: (repo: string, hash: string) => invoke<CommitRelation>('git:commitRelation', repo, hash),
     rebase: (repo: string, onto: string) => invoke<RewriteResult>('git:rebase', repo, onto),

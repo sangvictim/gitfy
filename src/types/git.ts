@@ -137,6 +137,9 @@ export interface CommitFile {
   path: string
   from?: string
   status: string
+  /** Lines added / removed (undefined for binary files) */
+  additions?: number
+  deletions?: number
 }
 
 export interface Branch {
@@ -199,8 +202,11 @@ export interface HistoryState {
   redo: string | null
 }
 
-/** 'ff' = fast-forward if possible, otherwise merge · 'ff-only' = refuse if a merge would be needed */
-export type PullMode = 'ff' | 'ff-only'
+/**
+ * 'ff' = fast-forward if possible, otherwise merge · 'ff-only' = refuse if a merge would be needed ·
+ * 'rebase' = replay local commits on top of the upstream
+ */
+export type PullMode = 'ff' | 'ff-only' | 'rebase'
 
 export interface PullResult {
   branch: string
@@ -215,6 +221,8 @@ export interface PushResult {
   remote: string
   /** The branch had no upstream; it now tracks <remote>/<branch> */
   setUpstream: boolean
+  /** Pushed with --force-with-lease */
+  forced?: boolean
 }
 
 export interface SshSettings {
@@ -289,4 +297,105 @@ export interface CommitRelation {
   isHead: boolean
   /** The commit is part of the checked-out branch */
   inHead: boolean
+}
+
+/** Narrow the commit graph */
+export interface LogFilter {
+  /** Only commits reachable from this branch (null = all branches) */
+  branch: string | null
+  /** Only commits by this author name (null = everyone) */
+  author: string | null
+}
+
+/** One commit that touched a file, with the file's path at that commit (it may have been renamed) */
+export interface FileHistoryEntry {
+  commit: Commit
+  path: string
+  /** Previous path when the commit renamed the file */
+  from?: string
+  status: string
+}
+
+export interface BlameCommit {
+  hash: string
+  author: string
+  /** ISO date */
+  date: string
+  summary: string
+}
+
+/** Per line (index 0 = line 1): the commit that last changed it */
+export interface BlameResult {
+  path: string
+  lines: { hash: string; text: string }[]
+  commits: Record<string, BlameCommit>
+  tooLarge: boolean
+}
+
+/**
+ * Which lines of a working-copy diff to stage / unstage: line numbers on the original (old) side and
+ * the modified (new) side, or the whole hunk containing a line.
+ */
+export type LineSelection = { oldLines: number[]; newLines: number[] } | { hunkAt: { side: 'old' | 'new'; line: number } }
+
+/** Two branches compared: `head` relative to `base` */
+export interface CompareResult {
+  base: string
+  head: string
+  /** Commits in head but not in base */
+  ahead: Commit[]
+  /** Commits in base but not in head */
+  behind: Commit[]
+  /** Changes on head since it split from base (three-dot diff) */
+  files: CommitFile[]
+  /** The commit they split from */
+  mergeBase: string | null
+}
+
+export interface PushOptions {
+  /** Overwrite the remote branch, but only if it is still where we last saw it (--force-with-lease) */
+  force?: boolean
+  /** Push to this remote and make it the branch's upstream */
+  remote?: string
+  /** Also push all tags */
+  tags?: boolean
+}
+
+export interface SubmoduleInfo {
+  name: string
+  path: string
+  url: string | null
+  /** Commit the superproject expects (or has checked out) */
+  commit: string
+  state: 'uninitialized' | 'ok' | 'changed' | 'conflict'
+}
+
+export interface LfsInfo {
+  /** .gitattributes routes files through Git LFS */
+  used: boolean
+  /** The git-lfs extension is installed */
+  installed: boolean
+  version: string | null
+  /** Tracked files stored in LFS */
+  files: number
+}
+
+export interface Identity {
+  name: string | null
+  email: string | null
+}
+
+export interface RepoIdentity {
+  /** Set in this repository only (.git/config) */
+  local: Identity
+  /** What commits use when nothing is set locally (global / system config) */
+  inherited: Identity
+}
+
+export interface IgnoreCheck {
+  ignored: boolean
+  /** The .gitignore rule that decided it (a "!" rule means it was explicitly un-ignored) */
+  rule: { source: string; line: number; pattern: string } | null
+  /** Git still tracks the file, so ignore rules don't apply to it */
+  tracked: boolean
 }

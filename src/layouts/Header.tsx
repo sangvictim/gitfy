@@ -5,16 +5,17 @@ import { CreateBranchModal } from '../features/branch/CreateBranchModal'
 import { CommitSearch } from '../features/commit/CommitSearch'
 import { CloneModal } from '../features/repo/CloneModal'
 import { StashModal } from '../features/stash/StashModal'
+import { ConfirmModal } from '../components/ConfirmModal'
 import { useRepoActions } from '../features/repo/useRepoActions'
 import { cx } from '../lib/format'
 import { ipc } from '../services/ipc'
 import { useRepoStore } from '../store/repo.store'
 import { toast } from '../store/toast.store'
 import { useUiStore } from '../store/ui.store'
-import type { PullMode } from '../types/git'
+import type { PullMode, RemoteInfo } from '../types/git'
 
 export function Header() {
-  const { repo, status, branches, refreshAll, busy, history, undo, redo, pull, push, stashApply } = useRepoStore()
+  const { repo, status, branches, refreshAll, busy, history, undo, redo, pull, stashApply } = useRepoStore()
   const { openWithDialog } = useRepoActions()
   const [modal, setModal] = useState<'clone' | 'branch' | 'stash' | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -52,18 +53,7 @@ export function Header() {
           onClick={redo}
         />
         <PullButton disabled={!!busy} behind={status?.tracking ? status.behind : 0} onPull={pull} />
-        <ToolButton
-          icon="push"
-          label="Push"
-          disabled={!!busy || !status?.branch}
-          badge={status?.tracking ? status.ahead : 0}
-          title={
-            status?.tracking
-              ? `Push '${status.branch}' to ${status.tracking}${status.ahead ? ` (${status.ahead} commit${status.ahead === 1 ? '' : 's'})` : ''}`
-              : `Push '${status?.branch ?? ''}' and set its upstream`
-          }
-          onClick={push}
-        />
+        <PushButton disabled={!!busy || !status?.branch} />
         <ToolButton
           icon="stash"
           label="Stash"
@@ -132,10 +122,16 @@ function PullButton({
     }
   }, [open])
 
-  const items: { label: string; hint: string; run: () => void }[] = [
-    { label: 'Fetch All', hint: 'Download from every remote without changing your branch', run: fetchAll },
+  const items: MenuItem[] = [
+    { label: 'Fetch All', hint: 'Download from every remote without changing your branch', run: () => fetchAll() },
+    {
+      label: 'Fetch All & prune',
+      hint: 'Also remove remote branches that were deleted on the server',
+      run: () => fetchAll(true),
+    },
     { label: 'Pull (fast-forward if possible)', hint: 'Merges if your branch has diverged', run: () => onPull('ff') },
     { label: 'Pull (fast-forward only)', hint: 'Refuses instead of creating a merge commit', run: () => onPull('ff-only') },
+    { label: 'Pull (rebase)', hint: 'Replays your commits on top of the remote ones — no merge commit', run: () => onPull('rebase') },
   ]
 
   return (
@@ -159,24 +155,143 @@ function PullButton({
       >
         <Icon name="down" size={12} />
       </button>
-      {open && (
-        <ul role="menu" className="absolute top-full left-0 z-30 mt-1 w-72 rounded-md border border-border bg-panel-2 py-1 shadow-xl">
-          {items.map((it) => (
-            <li key={it.label}>
-              <button
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false)
-                  it.run()
-                }}
-                className="flex w-full flex-col px-3 py-1.5 text-left hover:bg-bg"
-              >
-                <span className="text-[13px]">{it.label}</span>
-                <span className="text-[11px] text-muted">{it.hint}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+      {open && <DropdownMenu items={items} onClose={() => setOpen(false)} />}
+    </div>
+  )
+}
+
+interface MenuItem {
+  label: string
+  hint: string
+  run: () => void
+  danger?: boolean
+}
+
+function DropdownMenu({ items, onClose }: { items: MenuItem[]; onClose: () => void }) {
+  return (
+    <ul role="menu" className="absolute top-full left-0 z-30 mt-1 w-72 rounded-md border border-border bg-panel-2 py-1 shadow-xl">
+      {items.map((it) => (
+        <li key={it.label}>
+          <button
+            role="menuitem"
+            onClick={() => {
+              onClose()
+              it.run()
+            }}
+            className="flex w-full flex-col px-3 py-1.5 text-left hover:bg-bg"
+          >
+            <span className={cx('text-[13px]', it.danger && 'text-danger')}>{it.label}</span>
+            <span className="text-[11px] text-muted">{it.hint}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** Close a dropdown on outside click / Esc */
+function useDismiss(open: boolean, setOpen: (v: boolean) => void, ref: React.RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false)
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false)
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open, setOpen, ref])
+}
+
+const NO_REMOTES: RemoteInfo[] = []
+
+/** Push with a menu for tags, another remote and force push */
+function PushButton({ disabled }: { disabled: boolean }) {
+  const status = useRepoStore((s) => s.status)
+  // Select the stable array (a fresh `[]` per render would make zustand re-render forever)
+  const remotes = useRepoStore((s) => s.branches?.remotes) ?? NO_REMOTES
+  const push = useRepoStore((s) => s.push)
+  const [open, setOpen] = useState(false)
+  const [confirmForce, setConfirmForce] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  useDismiss(open, setOpen, ref)
+
+  const branch = status?.branch ?? ''
+  const upstream = status?.tracking ?? null
+  const upstreamRemote = upstream?.split('/')[0] ?? null
+  const target = upstream ?? `${remotes.some((r) => r.name === 'origin') ? 'origin' : (remotes[0]?.name ?? 'origin')}/${branch}`
+  const ahead = upstream ? (status?.ahead ?? 0) : 0
+  const behind = upstream ? (status?.behind ?? 0) : 0
+
+  const items: MenuItem[] = [
+    { label: 'Push', hint: upstream ? `To ${upstream}` : `To ${target} and track it`, run: () => push() },
+    { label: 'Push with tags', hint: 'Also send every tag', run: () => push({ tags: true }) },
+    ...remotes
+      .filter((r) => r.name !== upstreamRemote)
+      .map((r) => ({
+        label: `Push to ${r.name}`,
+        hint: `Push ${branch} to ${r.name} and make it the upstream`,
+        run: () => push({ remote: r.name }),
+      })),
+    {
+      label: 'Force push (with lease)…',
+      hint: 'Replace the remote branch after a rebase / amend / reset',
+      danger: true,
+      run: () => setConfirmForce(true),
+    },
+  ]
+
+  return (
+    <div ref={ref} className="relative flex items-stretch">
+      <ToolButton
+        icon="push"
+        label="Push"
+        disabled={disabled}
+        badge={ahead}
+        title={
+          upstream
+            ? `Push '${branch}' to ${upstream}${ahead ? ` (${ahead} commit${ahead === 1 ? '' : 's'})` : ''}`
+            : `Push '${branch}' and set its upstream`
+        }
+        onClick={() => push()}
+      />
+      <button
+        onClick={() => setOpen(!open)}
+        disabled={disabled || remotes.length === 0}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="More push options"
+        title="More push options"
+        className="-ml-1.5 flex w-4 items-start justify-center rounded pt-2 text-muted hover:bg-panel-2 hover:text-fg disabled:opacity-35"
+      >
+        <Icon name="down" size={12} />
+      </button>
+      {open && <DropdownMenu items={items} onClose={() => setOpen(false)} />}
+      {confirmForce && (
+        <ConfirmModal
+          title="Force push"
+          confirmLabel="Force push"
+          danger
+          onConfirm={() => push({ force: true })}
+          onClose={() => setConfirmForce(false)}
+        >
+          <p className="text-[13px]">
+            Replace <span className="font-mono font-semibold">{target}</span> with your local{' '}
+            <span className="font-mono font-semibold">{branch}</span>.
+          </p>
+          {behind > 0 && (
+            <p className="rounded-md bg-danger/10 px-2.5 py-2 text-xs text-danger">
+              {behind} commit{behind === 1 ? '' : 's'} on {upstream} {behind === 1 ? 'is' : 'are'} not in your branch and
+              will be removed from the remote.
+            </p>
+          )}
+          <p className="text-xs text-muted">
+            Gitfy uses <span className="font-mono">--force-with-lease</span>: if someone pushed to the branch since you last
+            fetched, the push is refused instead of overwriting their work. Others who already pulled the old commits will
+            have to reset their copy.
+          </p>
+        </ConfirmModal>
       )}
     </div>
   )

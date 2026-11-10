@@ -189,6 +189,7 @@ src/                      Renderer (React)
     stash/                Stash dialog
     tag/                  Create / delete tag dialogs
     rewrite/              Rebase, reset, cherry-pick / revert and amend dialogs
+    inspect/              File history, blame and branch compare views
     conflict/             Merge banner, conflict list, conflict resolver, conflict-marker parser
     settings/             Preferences, SSH settings
   components/             Shared UI (Button, Modal, Toaster, DiffViewer, Icon…)
@@ -241,17 +242,17 @@ Development data is kept separate so it never leaks into a release.
   - Reset soft / mixed / hard to a chosen commit (commit panel → Reset to here)
   - Amend the last commit: message and/or staged changes (commit form checkbox, or commit panel → Amend)
   - Every one of these can be undone / redone; dialogs warn when already-pushed commits would be rewritten
-- [ ] **Sprint 7:** deeper inspection
-  - File history and blame (`log({ file })`, `raw(['blame', '--porcelain'])`)
-  - Hunk- and line-level staging via `applyPatch()`
-  - `diffSummary()` stats in the commit panel
-  - Branch compare, and filter the graph by branch or author
-- [ ] **Sprint 8:** remotes and repository management
-  - Add, rename and remove remotes (`addRemote()`, `removeRemote()`, `getRemotes(true)`)
-  - Push options: set upstream, `--force-with-lease`, push tags
-  - Pull with rebase (`pull('origin', branch, { '--rebase': null })`) and prune on fetch
-  - Submodules (`subModule()`, `submoduleUpdate()`) and Git LFS detection
-  - Per-repository settings: user name / email (`addConfig()`, `listConfig()`), `.gitignore` editor via `checkIgnore()`
+- [x] **Sprint 7:** deeper inspection
+  - File history that follows renames, and blame with the commit, author and age of every line (diff header → History / Blame)
+  - Stage or unstage a single hunk, or just the selected lines, from the diff of a modified file
+  - Lines added / removed per file and in total in the commit panel
+  - Compare two branches (sidebar → ⋯ → Compare): commits on each side and the files changed since they split; filter the graph by branch or author
+- [x] **Sprint 8:** remotes and repository management
+  - Add, edit (rename / URL) and remove remotes
+  - Push menu: push with tags, push to another remote (sets the upstream), force push with `--force-with-lease` behind a confirmation
+  - Pull with rebase, and Fetch All & prune
+  - Submodules in repository settings (clone / update), and a Git LFS check that warns when git-lfs is missing
+  - Repository settings (Preferences → Repository): this repository's user name / email, a `.gitignore` editor with a "test a path" check, and "Ignore" on untracked files
 - [ ] **Later:** code signing and CI release pipeline for Windows / macOS, verify Windows / macOS behavior (askpass, SSH), light / dark theme switch, command palette, GitHub / GitLab pull-request links
 
 Planned git operations use the [`simple-git`](https://github.com/steveukx/git-js) API, with `raw()` as a fallback for commands it has no helper for. The full product spec is in [`PRD GitFy.txt`](PRD%20GitFy.txt). Updates will be manual, with no silent background auto-update.

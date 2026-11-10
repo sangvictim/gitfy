@@ -4,10 +4,13 @@ import { Field, Input, TextArea } from '../../components/Input'
 import { Modal } from '../../components/Modal'
 import { cx } from '../../lib/format'
 import { useRepoStore } from '../../store/repo.store'
+import type { TagRef } from '../../types/git'
+
+const NO_TAGS: TagRef[] = []
 
 /** Tag a commit (HEAD when `target` is omitted) */
 export function CreateTagModal({ target, onClose }: { target?: string; onClose: () => void }) {
-  const tags = useRepoStore((s) => s.branches?.tags ?? [])
+  const tags = useRepoStore((s) => s.branches?.tags) ?? NO_TAGS
   const commits = useRepoStore((s) => s.commits)
   const createTag = useRepoStore((s) => s.createTag)
   const pushTags = useRepoStore((s) => s.pushTags)

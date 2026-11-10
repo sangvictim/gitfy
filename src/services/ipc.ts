@@ -1,4 +1,13 @@
-import type { ConflictResolution, IpcResult, OpenTabs, PullMode, ResetMode } from '../types/git'
+import type {
+  ConflictResolution,
+  IpcResult,
+  LineSelection,
+  LogFilter,
+  OpenTabs,
+  PullMode,
+  PushOptions,
+  ResetMode,
+} from '../types/git'
 
 /** Unwrap an IpcResult, turning `{ ok: false }` into a thrown Error for ergonomic try/catch in the UI */
 async function unwrap<T>(p: Promise<IpcResult<T>>): Promise<T> {
@@ -48,7 +57,7 @@ export function gitFor(repo: string) {
 
     commit: (summary: string, description?: string, newBranch?: string) =>
       unwrap(g().commit(repo, summary, description, newBranch)),
-    log: (limit?: number) => unwrap(g().log(repo, limit)),
+    log: (limit?: number, filter?: Partial<LogFilter>) => unwrap(g().log(repo, limit, filter)),
     getCommit: (hash: string) => unwrap(g().getCommit(repo, hash)),
     commitFiles: (hash: string) => unwrap(g().commitFiles(repo, hash)),
     commitFileDiff: (hash: string, file: string, from?: string) => unwrap(g().commitFileDiff(repo, hash, file, from)),
@@ -60,9 +69,19 @@ export function gitFor(repo: string) {
 
     addRemote: (name: string, url: string) => unwrap(g().addRemote(repo, name, url)),
     updateRemote: (oldName: string, name: string, url: string) => unwrap(g().updateRemote(repo, oldName, name, url)),
-    fetchAll: () => unwrap(g().fetchAll(repo)),
+    fetchAll: (prune?: boolean) => unwrap(g().fetchAll(repo, prune)),
+    removeRemote: (name: string) => unwrap(g().removeRemote(repo, name)),
     pull: (mode?: PullMode) => unwrap(g().pull(repo, mode)),
-    push: () => unwrap(g().push(repo)),
+    push: (opts?: PushOptions) => unwrap(g().push(repo, opts)),
+    submodules: () => unwrap(g().submodules(repo)),
+    updateSubmodules: (path?: string) => unwrap(g().updateSubmodules(repo, path)),
+    lfsInfo: () => unwrap(g().lfsInfo(repo)),
+    identity: () => unwrap(g().identity(repo)),
+    setIdentity: (name: string, email: string) => unwrap(g().setIdentity(repo, name, email)),
+    readGitignore: () => unwrap(g().readGitignore(repo)),
+    writeGitignore: (content: string) => unwrap(g().writeGitignore(repo, content)),
+    addToGitignore: (pattern: string) => unwrap(g().addToGitignore(repo, pattern)),
+    checkIgnore: (file: string) => unwrap(g().checkIgnore(repo, file)),
 
     merge: (from: string, noFastForward?: boolean) => unwrap(g().merge(repo, from, noFastForward)),
     conflict: (file: string) => unwrap(g().conflict(repo, file)),
@@ -71,6 +90,13 @@ export function gitFor(repo: string) {
     continueOperation: (message?: string) => unwrap(g().continueOperation(repo, message)),
     abortOperation: () => unwrap(g().abortOperation(repo)),
 
+    fileHistory: (file: string) => unwrap(g().fileHistory(repo, file)),
+    blame: (file: string, rev?: string) => unwrap(g().blame(repo, file, rev)),
+    applyLines: (file: string, staged: boolean, sel: LineSelection) => unwrap(g().applyLines(repo, file, staged, sel)),
+    compare: (base: string, head: string) => unwrap(g().compare(repo, base, head)),
+    compareFileDiff: (base: string, head: string, file: string, from?: string) =>
+      unwrap(g().compareFileDiff(repo, base, head, file, from)),
+    authors: () => unwrap(g().authors(repo)),
     rewriteInfo: (base: string) => unwrap(g().rewriteInfo(repo, base)),
     commitRelation: (hash: string) => unwrap(g().commitRelation(repo, hash)),
     rebase: (onto: string) => unwrap(g().rebase(repo, onto)),

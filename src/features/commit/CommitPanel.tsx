@@ -6,6 +6,7 @@ import { cx, fullDate, splitPath } from '../../lib/format'
 import { useActiveGit, useRepoStore } from '../../store/repo.store'
 import { toast } from '../../store/toast.store'
 import type { Commit, CommitFile } from '../../types/git'
+import { LineStats } from '../inspect/LineStats'
 import { AmendModal } from '../rewrite/AmendModal'
 import { PickRevertModal } from '../rewrite/PickRevertModal'
 import { ResetModal } from '../rewrite/ResetModal'
@@ -127,6 +128,7 @@ export function CommitPanel({ hash }: { hash: string }) {
             {counts.D > 0 && <span className="text-danger">− {counts.D} deleted</span>}
             {counts.R > 0 && <span className="text-accent">→ {counts.R} renamed</span>}
             {files.length === 0 && <span className="text-muted">No file changes</span>}
+            {files.length > 0 && <TotalStats files={files} />}
           </>
         )}
       </div>
@@ -149,6 +151,7 @@ export function CommitPanel({ hash }: { hash: string }) {
                 {dir && <span className="text-muted">{dir}</span>}
                 <span>{name}</span>
               </span>
+              <LineStats file={f} />
             </li>
           )
         })}
@@ -277,5 +280,26 @@ function ActionButton({
       <Icon name={icon} size={13} className="shrink-0 text-muted" />
       <span className="truncate">{label}</span>
     </button>
+  )
+}
+
+/** "+120 −45" with a small bar showing the ratio */
+function TotalStats({ files }: { files: CommitFile[] }) {
+  const adds = files.reduce((n, f) => n + (f.additions ?? 0), 0)
+  const dels = files.reduce((n, f) => n + (f.deletions ?? 0), 0)
+  if (!adds && !dels) return null
+  const total = adds + dels
+  const blocks = 5
+  const green = Math.round((adds / total) * blocks)
+  return (
+    <span className="ml-auto flex items-center gap-1.5 font-mono text-[11px]" title={`${adds} lines added, ${dels} removed`}>
+      <span className="text-ok">+{adds}</span>
+      <span className="text-danger">−{dels}</span>
+      <span className="flex gap-px">
+        {Array.from({ length: blocks }, (_, i) => (
+          <span key={i} className={cx('h-2 w-2 rounded-[1px]', i < green ? 'bg-ok' : 'bg-danger')} />
+        ))}
+      </span>
+    </span>
   )
 }

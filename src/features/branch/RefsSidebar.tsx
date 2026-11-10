@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Icon, type IconName } from '../../components/Icon'
 import { cx } from '../../lib/format'
 import { useRepoStore } from '../../store/repo.store'
@@ -15,7 +16,7 @@ import { RemoteModal } from './RemoteModal'
 type SectionId = 'local' | 'remote' | 'stashes' | 'tags'
 
 export function RefsSidebar() {
-  const { branches, checkout, busy, focusCommit, select, selected, fetchAll, stashApply, stashDrop, pushTags } =
+  const { branches, checkout, busy, focusCommit, select, selected, fetchAll, stashApply, stashDrop, pushTags, setOpenDiff } =
     useRepoStore()
   const [filter, setFilter] = useState('')
   const [open, setOpen] = useState<Record<SectionId, boolean>>({ local: false, remote: false, stashes: false, tags: false })
@@ -50,6 +51,17 @@ export function RefsSidebar() {
     }
     return [...groups.entries()]
   }, [remote, branches?.remotes, q]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const current = branches?.current ?? null
+  /** Actions on another branch, relative to the checked-out one */
+  const branchItems = (name: string): MenuItem[] => [
+    {
+      label: `Compare with ${current ?? 'HEAD'}`,
+      onClick: () => setOpenDiff({ kind: 'compare', base: current ?? 'HEAD', head: name }),
+    },
+    { label: `Merge into ${current ?? 'HEAD'}…`, disabled: !canMerge, onClick: () => setMerging(name) },
+    { label: `Rebase ${current ?? 'HEAD'} onto this…`, disabled: !canMerge, onClick: () => setRebasing(name) },
+  ]
 
   const toggle = (id: SectionId) => setOpen((o) => ({ ...o, [id]: !o[id] }))
   const forced = q.length > 0 // while filtering, show every section expanded
@@ -90,19 +102,13 @@ export function RefsSidebar() {
                 !b.current && (
                   <>
                     <RowAction disabled={!!busy} onClick={() => checkout(b.name)} label="Switch" />
-                    <RowAction
-                      disabled={!canMerge}
-                      onClick={() => setMerging(b.name)}
-                      label="Merge"
-                      title={`Merge ${b.name} into ${branches?.current ?? 'the current branch'}`}
+                    <RowMenu
+                      label={`More actions for ${b.name}`}
+                      items={[
+                        ...branchItems(b.name),
+                        { label: `Delete ${b.name}…`, danger: true, onClick: () => setDeleting(b.name) },
+                      ]}
                     />
-                    <RowAction
-                      disabled={!canMerge}
-                      onClick={() => setRebasing(b.name)}
-                      label="Rebase"
-                      title={`Rebase ${branches?.current ?? 'the current branch'} onto ${b.name}`}
-                    />
-                    <RowAction onClick={() => setDeleting(b.name)} icon="trash" label={`Delete ${b.name}`} danger />
                   </>
                 )
               }
@@ -195,18 +201,7 @@ export function RefsSidebar() {
                       actions={
                         <>
                           <RowAction disabled={!!busy} onClick={() => checkout(b.name, true)} label="Checkout" />
-                          <RowAction
-                            disabled={!canMerge}
-                            onClick={() => setMerging(b.name)}
-                            label="Merge"
-                            title={`Merge ${b.name} into ${branches?.current ?? 'the current branch'}`}
-                          />
-                          <RowAction
-                            disabled={!canMerge}
-                            onClick={() => setRebasing(b.name)}
-                            label="Rebase"
-                            title={`Rebase ${branches?.current ?? 'the current branch'} onto ${b.name}`}
-                          />
+                          <RowMenu label={`More actions for ${b.name}`} items={branchItems(b.name)} />
                         </>
                       }
                     />
@@ -454,4 +449,89 @@ function Empty({ children, indent }: { children: React.ReactNode; indent?: boole
 /** "On main: experiment" / "WIP on main: abc123 subject" -> "experiment" / "abc123 subject" */
 function stashLabel(message: string): string {
   return message.replace(/^(?:WIP )?on [^:]+:\s*/i, '') || message
+}
+
+interface MenuItem {
+  label: string
+  onClick: () => void
+  disabled?: boolean
+  danger?: boolean
+}
+
+/** "⋯" button with a small menu (rendered in a portal: the sidebar scrolls and would clip it) */
+function RowMenu({ label, items }: { label: string; items: MenuItem[] }) {
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  const btn = useRef<HTMLButtonElement>(null)
+  const menu = useRef<HTMLUListElement>(null)
+
+  useEffect(() => {
+    if (!pos) return
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent && e.key !== 'Escape') return
+      if (e instanceof MouseEvent && (menu.current?.contains(e.target as Node) || btn.current?.contains(e.target as Node))) return
+      setPos(null)
+    }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', close)
+    window.addEventListener('resize', close)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', close)
+      window.removeEventListener('resize', close)
+    }
+  }, [pos])
+
+  return (
+    <>
+      <button
+        ref={btn}
+        onClick={(e) => {
+          e.stopPropagation()
+          if (pos) return setPos(null)
+          const r = e.currentTarget.getBoundingClientRect()
+          setPos({ x: r.left, y: r.bottom + 2 })
+        }}
+        onDoubleClick={(e) => e.stopPropagation()}
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={!!pos}
+        title={label}
+        className="rounded px-1 py-0.5 text-muted hover:bg-bg hover:text-fg"
+      >
+        <span className="block h-3 leading-[8px] tracking-wider">···</span>
+      </button>
+      {pos &&
+        createPortal(
+          <ul
+            ref={menu}
+            // React events bubble out of portals to the row underneath: keep them from selecting it
+            onClick={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            role="menu"
+            style={{ left: Math.min(pos.x, window.innerWidth - 248), top: pos.y }}
+            className="fixed z-50 w-60 rounded-md border border-border bg-panel-2 py-1 text-[12.5px] shadow-xl"
+          >
+            {items.map((it) => (
+              <li key={it.label}>
+                <button
+                  role="menuitem"
+                  disabled={it.disabled}
+                  onClick={() => {
+                    setPos(null)
+                    it.onClick()
+                  }}
+                  className={cx(
+                    'block w-full truncate px-3 py-1.5 text-left hover:bg-bg disabled:opacity-40',
+                    it.danger && 'text-danger',
+                  )}
+                >
+                  {it.label}
+                </button>
+              </li>
+            ))}
+          </ul>,
+          document.body,
+        )}
+    </>
+  )
 }

@@ -13,9 +13,11 @@ interface Props {
   onToggleAll: () => void
   /** Offer "discard changes" (unstaged list only) */
   onDiscard?: (files: FileChange[]) => void
+  /** Offer "add to .gitignore" for untracked files */
+  onIgnore?: (file: FileChange) => void
 }
 
-export function FileList({ title, files, staged, selectedPath, onSelect, onToggle, onToggleAll, onDiscard }: Props) {
+export function FileList({ title, files, staged, selectedPath, onSelect, onToggle, onToggleAll, onDiscard, onIgnore }: Props) {
   const actionLabel = staged ? 'Unstage' : 'Stage'
   return (
     <section className="flex min-h-0 flex-1 flex-col">
@@ -69,6 +71,19 @@ export function FileList({ title, files, staged, selectedPath, onSelect, onToggl
                 <span className={cx(f.type === 'deleted' && 'line-through opacity-70')}>{name}</span>
                 {dir && <span className="ml-1.5 text-xs text-muted">{dir}</span>}
               </span>
+              {onIgnore && f.type === 'untracked' && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onIgnore(f)
+                  }}
+                  title="Add to .gitignore"
+                  aria-label={`Ignore ${f.path}`}
+                  className="rounded p-0.5 text-muted opacity-0 group-hover:opacity-100 hover:bg-bg hover:text-fg"
+                >
+                  <Icon name="ignore" size={13} />
+                </button>
+              )}
               {onDiscard && (
                 <button
                   onClick={(e) => {

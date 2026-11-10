@@ -134,3 +134,19 @@ textarea,
 .conflict-action-muted {
   color: var(--color-muted);
 }
+
+/* Blame view: the line-number gutter holds the commit labels */
+.blame-editor .monaco-editor .line-numbers {
+  text-align: left;
+  color: var(--color-muted);
+  cursor: pointer;
+  font-size: 11.5px;
+}
+.blame-editor .monaco-editor .blame-block-start {
+  box-shadow: inset 0 1px 0 #ffffff14;
+}
+.blame-editor .monaco-editor .blame-age-0 { background: #6d8bff1f; width: 4px !important; margin-left: 3px; }
+.blame-editor .monaco-editor .blame-age-1 { background: #6d8bff44; width: 4px !important; margin-left: 3px; }
+.blame-editor .monaco-editor .blame-age-2 { background: #6d8bff77; width: 4px !important; margin-left: 3px; }
+.blame-editor .monaco-editor .blame-age-3 { background: #6d8bffaa; width: 4px !important; margin-left: 3px; }
+.blame-editor .monaco-editor .blame-age-4 { background: #6d8bff; width: 4px !important; margin-left: 3px; }

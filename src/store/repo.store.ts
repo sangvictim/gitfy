@@ -8,10 +8,14 @@ import type {
   HistoryState,
   OperationKind,
   PullMode,
+  PushOptions,
   RepoInfo,
   RepoStatus,
+  LineSelection,
+  LogFilter,
   ResetMode,
   RewriteResult,
+  SubmoduleInfo,
 } from '../types/git'
 import { toast } from './toast.store'
 
@@ -23,6 +27,15 @@ export type DiffTarget =
   | { kind: 'working'; path: string; staged: boolean; from?: string }
   | { kind: 'commit'; hash: string; path: string; from?: string }
   | { kind: 'conflict'; path: string }
+  /** Commits that touched a file */
+  | { kind: 'history'; path: string }
+  /** Who changed each line, in the working copy or at commit `rev` */
+  | { kind: 'blame'; path: string; rev?: string }
+  /** Two branches side by side */
+  | { kind: 'compare'; base: string; head: string }
+
+/** A diff of one file (shown by DiffPanel) */
+export type FileDiffTarget = Extract<DiffTarget, { kind: 'working' | 'commit' }>
 
 /** Everything that belongs to one tab */
 interface Session {
@@ -39,6 +52,9 @@ interface Session {
   search: string
   /** What Undo / Redo would do right now */
   history: HistoryState
+  /** Narrows the graph to one branch / author */
+  logFilter: LogFilter
+  submodules: SubmoduleInfo[]
 }
 
 export interface Tab {
@@ -94,9 +110,14 @@ interface RepoState extends Session {
   updateRemote: (oldName: string, name: string, url: string) => Promise<boolean>
   deleteBranch: (name: string, force: boolean) => Promise<boolean>
 
-  fetchAll: () => Promise<void>
+  /** Fetch every remote; `prune` also drops remote branches deleted on the server */
+  fetchAll: (prune?: boolean) => Promise<void>
   pull: (mode?: PullMode) => Promise<void>
-  push: () => Promise<void>
+  push: (opts?: PushOptions) => Promise<boolean>
+  removeRemote: (name: string) => Promise<boolean>
+  updateSubmodules: (path?: string) => Promise<boolean>
+  /** Add a pattern (usually an untracked file) to .gitignore */
+  ignore: (pattern: string) => Promise<boolean>
   undo: () => Promise<void>
   redo: () => Promise<void>
 
@@ -122,6 +143,11 @@ interface RepoState extends Session {
   discard: (files: string[]) => Promise<boolean>
 
   /** Rebase the checked-out branch onto another branch */
+  /** Show only one branch and/or author in the graph */
+  setLogFilter: (filter: Partial<LogFilter>) => Promise<void>
+  /** Stage (or, from the staged list, unstage) some lines or a hunk of a file */
+  applyLines: (path: string, staged: boolean, sel: LineSelection) => Promise<boolean>
+
   rebase: (onto: string) => Promise<boolean>
   cherryPick: (hash: string) => Promise<boolean>
   revert: (hash: string) => Promise<boolean>
@@ -140,6 +166,8 @@ const emptySession = (repo: RepoInfo | null = null): Session => ({
   focusRequest: null,
   search: '',
   history: { undo: null, redo: null },
+  logFilter: { branch: null, author: null },
+  submodules: [],
 })
 
 const SESSION_KEYS = Object.keys(emptySession()) as (keyof Session)[]
@@ -244,7 +272,8 @@ export const useRepoStore = create<RepoState>((set, get) => {
   const loadLog = async (tabId: string) => {
     const git = gitOfTab(tabId)
     if (!git) return
-    const commits = await attempt(() => git.log())
+    const filter = sessionOf(tabId)?.logFilter
+    const commits = await attempt(() => git.log(undefined, filter))
     if (commits) patch(tabId, { commits })
   }
   const loadHistory = async (tabId: string) => {
@@ -256,8 +285,31 @@ export const useRepoStore = create<RepoState>((set, get) => {
       /* repo closed meanwhile */
     }
   }
+  const loadSubmodules = async (tabId: string) => {
+    const git = gitOfTab(tabId)
+    if (!git) return
+    try {
+      patch(tabId, { submodules: await git.submodules() })
+    } catch {
+      /* not essential */
+    }
+  }
   const loadAll = (tabId: string) =>
-    Promise.all([loadStatus(tabId), loadBranches(tabId), loadLog(tabId), loadHistory(tabId)]).then(() => {})
+    Promise.all([loadStatus(tabId), loadBranches(tabId), loadLog(tabId), loadHistory(tabId), loadSubmodules(tabId)]).then(
+      () => {},
+    )
+
+  /** Warn once when a repository needs Git LFS but it isn't installed (files would stay pointer files) */
+  const checkLfs = async (tabId: string) => {
+    const git = gitOfTab(tabId)
+    const info = await git?.lfsInfo().catch(() => null)
+    if (info?.used && !info.installed) {
+      toast.error(
+        'This repository stores large files with Git LFS, but git-lfs is not installed. Those files show up as small ' +
+          'pointer files until you install it (https://git-lfs.com) and reopen the repository.',
+      )
+    }
+  }
 
   /** Show a freshly opened repo: reuse its tab if already open, else the empty active tab, else a new tab */
   const placeRepo = async (repo: RepoInfo) => {
@@ -274,6 +326,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
       patch(get().activeTabId, emptySession(repo))
     }
     await Promise.all([loadAll(get().activeTabId), get().loadRecent()])
+    checkLfs(get().activeTabId)
   }
 
   /** After a merge / pull stopped on conflicts: open the WIP panel on the first conflicted file */
@@ -338,6 +391,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
         )
         set({ ...emptySession(opened[activeIdx]), tabs, activeTabId: tabs[activeIdx].id, parked })
         await loadAll(tabs[activeIdx].id)
+        checkLfs(tabs[activeIdx].id)
       } finally {
         set({ busy: null })
         tabsRestored = true
@@ -531,11 +585,11 @@ export const useRepoStore = create<RepoState>((set, get) => {
       await loadBranches(a.tabId)
       return !!ok
     },
-    fetchAll: async () => {
+    fetchAll: async (prune) => {
       const a = active()
       if (!a) return
-      const ok = await withBusy('Fetching…', () => a.git.fetchAll().then(() => true))
-      if (ok) toast.success('Fetched all remotes')
+      const ok = await withBusy(prune ? 'Fetching and pruning…' : 'Fetching…', () => a.git.fetchAll(prune).then(() => true))
+      if (ok) toast.success(prune ? 'Fetched all remotes and removed branches deleted on them' : 'Fetched all remotes')
       await loadAll(a.tabId)
     },
     pull: async (mode = 'ff') => {
@@ -543,7 +597,12 @@ export const useRepoStore = create<RepoState>((set, get) => {
       if (!a) return
       const r = await withBusy('Pulling…', () => a.git.pull(mode))
       if (r?.conflicts?.length) {
-        showConflicts(a.tabId, r.conflicts, `Pull into '${r.branch}'`)
+        showConflicts(
+          a.tabId,
+          r.conflicts,
+          `Pull into '${r.branch}'`,
+          mode === 'rebase' ? 'continue the rebase from the banner above the graph' : undefined,
+        )
       } else if (r) {
         toast.success(
           r.commits
@@ -553,18 +612,42 @@ export const useRepoStore = create<RepoState>((set, get) => {
       }
       await loadAll(a.tabId)
     },
-    push: async () => {
+    push: async (opts) => {
       const a = active()
-      if (!a) return
-      const r = await withBusy('Pushing…', () => a.git.push())
+      if (!a) return false
+      const r = await withBusy(opts?.force ? 'Force pushing…' : 'Pushing…', () => a.git.push(opts))
       if (r) {
-        toast.success(
-          r.setUpstream
-            ? `Pushed '${r.branch}' to ${r.remote} (now tracking ${r.remote}/${r.branch})`
-            : `Pushed '${r.branch}' to ${r.remote}`,
-        )
+        const what = `${r.forced ? 'Force pushed' : 'Pushed'} '${r.branch}'${opts?.tags ? ' and tags' : ''} to ${r.remote}`
+        toast.success(r.setUpstream ? `${what} (now tracking ${r.remote}/${r.branch})` : what)
       }
       await loadAll(a.tabId)
+      return !!r
+    },
+    removeRemote: async (name) => {
+      const a = active()
+      if (!a) return false
+      const ok = await attempt(() => a.git.removeRemote(name).then(() => true))
+      if (ok) toast.success(`Removed remote ${name}`)
+      await loadAll(a.tabId)
+      return !!ok
+    },
+    updateSubmodules: async (path) => {
+      const a = active()
+      if (!a) return false
+      const ok = await withBusy(path ? `Updating ${path}…` : 'Updating submodules…', () =>
+        a.git.updateSubmodules(path).then(() => true),
+      )
+      if (ok) toast.success(path ? `Updated submodule ${path}` : 'Updated all submodules')
+      await loadAll(a.tabId)
+      return !!ok
+    },
+    ignore: async (pattern) => {
+      const a = active()
+      if (!a) return false
+      const ok = await attempt(() => a.git.addToGitignore(pattern).then(() => true))
+      if (ok) toast.success(`Added ${pattern} to .gitignore`)
+      await loadStatus(a.tabId)
+      return !!ok
     },
 
     // ---- merge & conflicts --------------------------------------------------
@@ -705,6 +788,22 @@ export const useRepoStore = create<RepoState>((set, get) => {
       if (!a) return false
       const ok = await attempt(() => a.git.discard(files).then(() => true))
       if (ok) toast.success(`Discarded changes to ${files.length === 1 ? files[0] : `${files.length} files`}`)
+      await loadStatus(a.tabId)
+      return !!ok
+    },
+
+    // ---- inspection ---------------------------------------------------------
+    setLogFilter: async (filter) => {
+      const tabId = get().activeTabId
+      const cur = sessionOf(tabId)?.logFilter ?? { branch: null, author: null }
+      patch(tabId, { logFilter: { ...cur, ...filter } })
+      await loadLog(tabId)
+    },
+    applyLines: async (path, staged, sel) => {
+      const a = active()
+      if (!a) return false
+      const ok = await attempt(() => a.git.applyLines(path, staged, sel).then(() => true))
+      if (ok) toast.success(staged ? 'Unstaged the selected change' : 'Staged the selected change')
       await loadStatus(a.tabId)
       return !!ok
     },

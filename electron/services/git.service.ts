@@ -2,6 +2,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { simpleGit, type SimpleGit, type StatusResult } from 'simple-git'
 import type {
+  BlameCommit,
+  BlameResult,
   Branch,
   BranchList,
   Commit,
@@ -12,16 +14,24 @@ import type {
   ConflictFile,
   ConflictKind,
   ConflictResolution,
+  CompareResult,
   DiffContent,
   FileChange,
+  FileHistoryEntry,
   FileChangeType,
   HistoryState,
+  IgnoreCheck,
+  LfsInfo,
+  LineSelection,
+  LogFilter,
   MergeResult,
   OperationKind,
   PullMode,
   PullResult,
+  PushOptions,
   PushResult,
   RemoteInfo,
+  RepoIdentity,
   RepoOperation,
   RepoStatus,
   CommitRelation,
@@ -30,6 +40,7 @@ import type {
   RewriteResult,
   StashApplyResult,
   StashRef,
+  SubmoduleInfo,
   TagPushResult,
   TagRef,
 } from '../../src/types/git'
@@ -408,13 +419,17 @@ export async function getCommit(repo: string, hash: string): Promise<Commit> {
   return commit
 }
 
-export async function getLog(repo: string, limit = LOG_LIMIT): Promise<Commit[]> {
+export async function getLog(repo: string, limit = LOG_LIMIT, filter?: Partial<LogFilter>): Promise<Commit[]> {
   const g = git(repo)
   if (!(await hasHead(g))) return []
+  const branch = filter?.branch ? assertRefName(filter.branch) : null
+  if (branch && !(await refHash(repo, branch))) return []
+  const author = typeof filter?.author === 'string' && filter.author.trim() ? filter.author.trim() : null
   const out = await g.raw([
     'log',
-    '--exclude=refs/stash',
-    '--all',
+    ...(branch ? [branch] : ['--exclude=refs/stash', '--all']),
+    // The name is matched literally, not as a regular expression
+    ...(author ? ['--fixed-strings', `--author=${author}`] : []),
     // Chronological (children still before parents) — interleaves branches like most Git GUIs
     '--date-order',
     '--decorate=full',
@@ -454,12 +469,17 @@ export async function getCommitFiles(repo: string, hash: string): Promise<Commit
       const [status, a, b] = line.split('\t')
       return b ? { status: status[0], from: a, path: b } : { status: status[0], path: a }
     })
+  const withStats = await withNumstat(
+    repo,
+    files,
+    parent ? ['diff', parent, hash] : ['diff-tree', '--root', '--no-commit-id', '-r', hash],
+  )
   const untracked = await stashUntrackedParent(repo, hash)
   if (untracked) {
     const names = (await git(repo).raw(['ls-tree', '-r', '--name-only', untracked])).split('\n').filter(Boolean)
-    files.push(...names.map((path) => ({ status: 'A', path })))
+    withStats.push(...names.map((path) => ({ status: 'A', path })))
   }
-  return files
+  return withStats
 }
 
 export async function getCommitFileDiff(repo: string, hash: string, file: string, from?: string): Promise<DiffContent> {
@@ -704,13 +724,21 @@ export async function updateRemote(repo: string, oldName: string, name: string, 
   if (to !== from) await g.raw(['remote', 'rename', '--', from, to])
 }
 
+export async function removeRemote(repo: string, name: string) {
+  const n = cleanRemoteName(name)
+  if (!(await getRemotes(repo)).some((r) => r.name === n)) throw new Error(`Remote "${n}" no longer exists`)
+  // Also deletes its remote-tracking branches and any upstream settings pointing at it
+  await git(repo).raw(['remote', 'remove', '--', n])
+}
+
 function netGit(repo: string): SimpleGit {
   return netGitAt(repoService.require(repo).path)
 }
 
-export async function fetchAll(repo: string) {
+/** Fetch every remote; with `prune`, also drop remote branches that were deleted on the server */
+export async function fetchAll(repo: string, prune = false) {
   try {
-    await netGit(repo).raw(['fetch', '--all'])
+    await netGit(repo).raw(['fetch', '--all', ...(prune ? ['--prune', '--prune-tags'] : [])])
   } catch (err) {
     throw friendlyRemoteError(err, 'fetch')
   }
@@ -721,14 +749,23 @@ export async function pull(repo: string, mode: PullMode = 'ff'): Promise<PullRes
   if (!branch) throw new Error('Cannot pull with a detached HEAD — switch to a branch first')
   const before = await headHash(repo)
   if (await getOperation(repo)) throw new Error('Finish or abort the merge in progress before pulling')
+  const modeArg = mode === 'ff-only' ? '--ff-only' : mode === 'rebase' ? '--rebase' : '--no-rebase'
+  /** A pull --rebase that stopped on conflicts is recorded for undo once it is continued to the end */
+  const stopped = (conflicts: string[]): PullResult => {
+    if (mode === 'rebase' && before) pendingMoves.set(pendingKey(repo), { what: `pull (rebase) into ${branch}`, branch, before })
+    return { branch, commits: 0, conflicts }
+  }
   try {
     // --no-edit: never wait for an editor to write a merge commit message
-    await netGit(repo).raw(['pull', '--no-edit', mode === 'ff-only' ? '--ff-only' : '--no-rebase'])
+    await netGit(repo).raw(['pull', '--no-edit', modeArg])
     // Conflicts are reported on stdout, so the command may "succeed"
     const conflicts = await stoppedOnConflicts(repo)
-    if (conflicts) return { branch, commits: 0, conflicts }
+    if (conflicts) return stopped(conflicts)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
+    if (/cannot pull with rebase|You have unstaged changes|Your index contains uncommitted changes/i.test(msg)) {
+      throw new Error(`Commit or stash your changes before pulling with rebase.\n\n${msg}`)
+    }
     if (/no tracking information/i.test(msg)) {
       throw new Error(`'${branch}' has no upstream branch to pull from. Push it first to create one.`)
     }
@@ -736,7 +773,7 @@ export async function pull(repo: string, mode: PullMode = 'ff'): Promise<PullRes
       throw new Error(`'${branch}' and its upstream have diverged, so a fast-forward-only pull isn't possible. Use "Pull (fast-forward if possible)" to merge.`)
     }
     const conflicts = await stoppedOnConflicts(repo)
-    if (conflicts) return { branch, commits: 0, conflicts }
+    if (conflicts) return stopped(conflicts)
     if (/would be overwritten by merge|commit your changes or stash them/i.test(msg)) {
       throw new Error(`Your uncommitted changes would be overwritten by the pull. Commit or stash them first.\n\n${msg}`)
     }
@@ -751,7 +788,10 @@ export async function pull(repo: string, mode: PullMode = 'ff'): Promise<PullRes
   return { branch, commits }
 }
 
-export async function push(repo: string): Promise<PushResult> {
+export async function push(repo: string, opts: PushOptions = {}): Promise<PushResult> {
+  const force = opts?.force === true
+  const tags = opts?.tags === true
+  const chosen = typeof opts?.remote === 'string' ? cleanRemoteName(opts.remote) : null
   const branch = await currentBranch(repo)
   if (!branch) throw new Error('Cannot push with a detached HEAD — switch to a branch first')
   if (!(await hasHead(git(repo)))) throw new Error('Nothing to push yet — make a commit first')
@@ -768,28 +808,40 @@ export async function push(repo: string): Promise<PushResult> {
   let remote: string
   let setUpstream = false
   let args: string[]
-  if (upstreamRemote && upstreamMerge && upstreamRemote !== '.') {
-    remote = upstreamRemote
+  const remotes = (await g.raw(['remote'])).split('\n').map((r) => r.trim()).filter(Boolean)
+  if (chosen && !remotes.includes(chosen)) throw new Error(`Remote "${chosen}" no longer exists`)
+  const hasUpstream = !!upstreamRemote && !!upstreamMerge && upstreamRemote !== '.'
+  if (hasUpstream && (!chosen || chosen === upstreamRemote)) {
+    remote = upstreamRemote!
     args = ['push', remote, `HEAD:${upstreamMerge}`]
   } else {
-    const remotes = (await g.raw(['remote'])).split('\n').map((r) => r.trim()).filter(Boolean)
     if (remotes.length === 0) throw new Error('This repository has no remote to push to')
-    remote = remotes.includes('origin') ? 'origin' : remotes[0]
+    // A chosen remote, or (no upstream yet) origin / the only remote; it becomes the upstream
+    remote = chosen ?? (remotes.includes('origin') ? 'origin' : remotes[0])
     setUpstream = true
     args = ['push', '--set-upstream', remote, branch]
   }
+  // --force-with-lease only overwrites the remote branch if it is still where we last fetched it
+  if (force) args.splice(1, 0, '--force-with-lease')
+  if (tags) args.splice(1, 0, '--tags')
   try {
     await netGit(repo).raw(args)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
+    if (/stale info/i.test(msg)) {
+      throw new Error(`Force push refused: ${remote} has commits you haven't fetched yet, so they would be lost. Fetch first and check them.`)
+    }
     if (/rejected/i.test(msg) && /(non-fast-forward|fetch first|behind)/i.test(msg)) {
-      throw new Error(`Push rejected: ${remote} has commits that '${branch}' doesn't have yet. Pull first, then push again.`)
+      throw new Error(
+        `Push rejected: ${remote} has commits that '${branch}' doesn't have. Pull first — or, if you rewrote history ` +
+          `(rebase / amend / reset), use "Force push (with lease)".`,
+      )
     }
     throw friendlyRemoteError(err, 'push')
   }
   // Pushed commits are shared now — undoing local history past this point would diverge from the remote
   history.clear(repo)
-  return { branch, remote, setUpstream }
+  return { branch, remote, setUpstream, forced: force }
 }
 
 // ---------------------------------------------------------------------------
@@ -1436,6 +1488,455 @@ export async function discard(repo: string, files: string[]) {
   if (tracked.length) await g.raw(['checkout', '--', ...tracked])
   // -f only removes the listed files; ignored files are never touched (no -x)
   if (untracked.length) await g.raw(['clean', '-f', '-q', '--', ...untracked])
+}
+
+// ---------------------------------------------------------------------------
+// Inspection: file history, blame, partial staging, branch compare
+// ---------------------------------------------------------------------------
+
+/** `git diff --numstat -z` output -> path -> [added, deleted] (undefined for binary files) */
+function parseNumstat(out: string): Map<string, [number | undefined, number | undefined]> {
+  const map = new Map<string, [number | undefined, number | undefined]>()
+  const parts = out.split('\0')
+  for (let i = 0; i < parts.length; i++) {
+    const m = /^(-|\d+)\t(-|\d+)\t(.*)$/s.exec(parts[i].replace(/^\n/, ''))
+    if (!m) continue
+    const add = m[1] === '-' ? undefined : Number(m[1])
+    const del = m[2] === '-' ? undefined : Number(m[2])
+    // A rename is "added\tdeleted\t" followed by the old and the new path as separate fields
+    const path = m[3] ? m[3] : parts[(i += 2)]
+    if (path) map.set(path, [add, del])
+  }
+  return map
+}
+
+/** Attach +/- line counts to a file list */
+async function withNumstat(repo: string, files: CommitFile[], args: string[]): Promise<CommitFile[]> {
+  try {
+    const stats = parseNumstat(await git(repo).raw([...args, '--numstat', '-z', '-M']))
+    return files.map((f) => {
+      const s = stats.get(f.path)
+      return s ? { ...f, additions: s[0], deletions: s[1] } : f
+    })
+  } catch {
+    return files // stats are a nice-to-have
+  }
+}
+
+const HIST_START = '\x02'
+
+/** Commits that touched a file, following it across renames */
+export async function fileHistory(repo: string, file: string, limit = 500): Promise<FileHistoryEntry[]> {
+  safeJoin(repo, file)
+  if (!(await hasHead(git(repo)))) return []
+  const out = await git(repo).raw([
+    'log',
+    '--follow',
+    '-M',
+    '--decorate=full',
+    `--max-count=${Math.max(1, Math.min(limit, 2000))}`,
+    `--format=${HIST_START}${COMMIT_FORMAT}`,
+    '--name-status',
+    '--',
+    file,
+  ])
+  const entries: FileHistoryEntry[] = []
+  for (const chunk of out.split(HIST_START).filter(Boolean)) {
+    const end = chunk.lastIndexOf(RECORD)
+    const [commit] = parseCommits(chunk.slice(0, end + 1))
+    if (!commit) continue
+    // e.g. "M\tsrc/a.ts" or "R087\told.ts\tnew.ts"
+    const line = chunk.slice(end + 1).split('\n').find((l) => /^[A-Z]\d*\t/.test(l))
+    const [status, a, b] = (line ?? `M\t${file}`).split('\t')
+    entries.push(b ? { commit, status: status[0], from: a, path: b } : { commit, status: status[0], path: a })
+  }
+  return entries
+}
+
+/** Who last changed each line — of the working copy, or of the file at `rev` */
+export async function blame(repo: string, file: string, rev?: string): Promise<BlameResult> {
+  safeJoin(repo, file)
+  if (rev !== undefined) assertHash(rev)
+  if (!(await hasHead(git(repo)))) throw new Error('There is no history to blame yet')
+  const out = await git(repo).raw(['blame', '--porcelain', ...(rev ? [rev] : []), '--', file])
+  const lines: BlameResult['lines'] = []
+  const commits: Record<string, BlameCommit> = {}
+  const raw: Record<string, { author?: string; time?: number; summary?: string }> = {}
+  let current = ''
+  let bytes = 0
+  let tooLarge = false
+  for (const l of out.split('\n')) {
+    const head = /^([0-9a-f]{40}) \d+ \d+/.exec(l)
+    if (head) {
+      current = head[1]
+      raw[current] ??= {}
+      continue
+    }
+    if (l.startsWith('\t')) {
+      bytes += l.length
+      if (bytes > MAX_DIFF_BYTES) {
+        tooLarge = true
+        break
+      }
+      lines.push({ hash: current, text: l.slice(1) })
+    } else if (l.startsWith('author ')) raw[current].author = l.slice(7)
+    else if (l.startsWith('author-time ')) raw[current].time = Number(l.slice(12))
+    else if (l.startsWith('summary ')) raw[current].summary = l.slice(8)
+  }
+  for (const [hash, r] of Object.entries(raw)) {
+    const uncommitted = /^0+$/.test(hash)
+    commits[hash] = {
+      hash,
+      author: uncommitted ? 'You' : (r.author ?? ''),
+      date: new Date((r.time ?? Date.now() / 1000) * 1000).toISOString(),
+      summary: uncommitted ? 'Not committed yet' : (r.summary ?? ''),
+    }
+  }
+  return { path: file, lines, commits, tooLarge }
+}
+
+interface Hunk {
+  oldStart: number
+  oldCount: number
+  newStart: number
+  newCount: number
+  lines: string[]
+}
+
+function parseHunks(diff: string): { header: string[]; hunks: Hunk[] } {
+  const header: string[] = []
+  const hunks: Hunk[] = []
+  for (const line of diff.split('\n')) {
+    const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
+    if (m) {
+      hunks.push({
+        oldStart: Number(m[1]),
+        oldCount: m[2] === undefined ? 1 : Number(m[2]),
+        newStart: Number(m[3]),
+        newCount: m[4] === undefined ? 1 : Number(m[4]),
+        lines: [],
+      })
+    } else if (hunks.length) hunks[hunks.length - 1].lines.push(line)
+    else header.push(line)
+  }
+  // The diff ends with a newline: drop the empty string it leaves behind
+  for (const h of hunks) while (h.lines.length && h.lines[h.lines.length - 1] === '') h.lines.pop()
+  return { header, hunks }
+}
+
+/**
+ * Build a patch containing only the selected changed lines. Applied forwards (staging) unselected
+ * removals stay as context and unselected additions are left out; applied in reverse (unstaging) it is
+ * the other way round, because the patch then has to match the index's "new" side.
+ */
+function partialPatch(header: string[], hunks: Hunk[], oldSel: Set<number>, newSel: Set<number>, reverse: boolean): string | null {
+  const out: string[] = []
+  for (const h of hunks) {
+    let oldNo = h.oldStart
+    let newNo = h.newStart
+    const body: string[] = []
+    let changed = false
+    let lastKept = true
+    for (const line of h.lines) {
+      const tag = line[0]
+      if (tag === '\\') {
+        if (lastKept) body.push(line) // "\ No newline at end of file" belongs to the line before it
+        continue
+      }
+      if (tag === '-') {
+        const picked = oldSel.has(oldNo++)
+        if (picked) {
+          body.push(line)
+          changed = true
+          lastKept = true
+        } else if (!reverse) {
+          body.push(' ' + line.slice(1))
+          lastKept = true
+        } else lastKept = false
+      } else if (tag === '+') {
+        const picked = newSel.has(newNo++)
+        if (picked) {
+          body.push(line)
+          changed = true
+          lastKept = true
+        } else if (reverse) {
+          body.push(' ' + line.slice(1))
+          lastKept = true
+        } else lastKept = false
+      } else {
+        body.push(line)
+        oldNo++
+        newNo++
+        lastKept = true
+      }
+    }
+    if (!changed) continue
+    const oldCount = body.filter((l) => l[0] === ' ' || l[0] === '-').length
+    const newCount = body.filter((l) => l[0] === ' ' || l[0] === '+').length
+    out.push(`@@ -${h.oldStart},${oldCount} +${h.newStart},${newCount} @@`, ...body)
+  }
+  if (!out.length) return null
+  return [...header.filter((l) => l !== ''), ...out, ''].join('\n')
+}
+
+/** Stage (or with `staged`, unstage) some lines or one hunk of a modified file */
+export async function applyLines(repo: string, file: string, staged: boolean, sel: LineSelection) {
+  safeJoin(repo, file)
+  const g = git(repo)
+  const diff = await g.raw(['diff', '--no-color', '--no-ext-diff', '-U3', ...(staged ? ['--cached'] : []), '--', file])
+  const { header, hunks } = parseHunks(diff)
+  if (!hunks.length) throw new Error(staged ? 'Nothing staged in this file' : 'No unstaged changes in this file')
+  if (header.some((l) => /^(new file|deleted file|rename from|Binary files)/.test(l))) {
+    throw new Error('Line-by-line staging works for modified text files only — stage the whole file instead')
+  }
+  let oldSel: Set<number>
+  let newSel: Set<number>
+  if ('hunkAt' in sel) {
+    const { side, line } = sel.hunkAt
+    const hunk = hunks.find((h) => {
+      const start = side === 'old' ? h.oldStart : h.newStart
+      const count = side === 'old' ? h.oldCount : h.newCount
+      return line >= start && line <= start + Math.max(count, 1) - 1
+    })
+    if (!hunk) throw new Error('Put the cursor inside a change first')
+    oldSel = new Set()
+    newSel = new Set()
+    let o = hunk.oldStart
+    let n = hunk.newStart
+    for (const l of hunk.lines) {
+      if (l[0] === '-') oldSel.add(o++)
+      else if (l[0] === '+') newSel.add(n++)
+      else if (l[0] === ' ') {
+        o++
+        n++
+      }
+    }
+  } else {
+    const nums = (a: unknown) => (Array.isArray(a) ? a.filter((x): x is number => Number.isInteger(x) && x > 0) : [])
+    oldSel = new Set(nums(sel.oldLines))
+    newSel = new Set(nums(sel.newLines))
+  }
+  const patch = partialPatch(header, hunks, oldSel, newSel, staged)
+  if (!patch) throw new Error('The selection contains no changed lines')
+  // simple-git can't pipe stdin, so the patch goes through a file inside .git (always writable, never tracked)
+  const patchFile = path.join(await gitDir(repo), `gitfy-partial-${process.pid}-${Date.now()}.patch`)
+  await fs.writeFile(patchFile, patch, 'utf8')
+  try {
+    await g.raw(['apply', '--cached', '--recount', '--whitespace=nowarn', ...(staged ? ['-R'] : []), patchFile])
+  } finally {
+    await fs.rm(patchFile, { force: true })
+  }
+}
+
+/** Compare two branches / refs: commits on each side and what `head` changed since they split */
+export async function compareRefs(repo: string, base: string, head: string): Promise<CompareResult> {
+  const b = assertRefName(base)
+  const h = assertRefName(head)
+  if (!(await refHash(repo, b))) throw new Error(`'${b}' not found`)
+  if (!(await refHash(repo, h))) throw new Error(`'${h}' not found`)
+  const g = git(repo)
+  const log = async (range: string) =>
+    parseCommits(await g.raw(['log', '--decorate=full', '--max-count=500', `--format=${COMMIT_FORMAT}`, range]))
+  let mergeBase: string | null = null
+  try {
+    mergeBase = (await g.raw(['merge-base', b, h])).trim() || null
+  } catch {
+    /* unrelated histories */
+  }
+  const range = mergeBase ? [mergeBase, h] : [b, h]
+  const files: CommitFile[] = (await g.raw(['diff', '--name-status', '-M', ...range]))
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [status, x, y] = line.split('\t')
+      return y ? { status: status[0], from: x, path: y } : { status: status[0], path: x }
+    })
+  return {
+    base: b,
+    head: h,
+    ahead: await log(`${b}..${h}`),
+    behind: await log(`${h}..${b}`),
+    files: await withNumstat(repo, files, ['diff', ...range]),
+    mergeBase,
+  }
+}
+
+/** One file in a branch comparison: as it was where the branches split vs. on `head` */
+export async function compareFileDiff(repo: string, base: string, head: string, file: string, from?: string): Promise<DiffContent> {
+  safeJoin(repo, file)
+  if (from) safeJoin(repo, from)
+  const b = assertRefName(base)
+  const h = assertRefName(head)
+  let mergeBase = b
+  try {
+    mergeBase = (await git(repo).raw(['merge-base', b, h])).trim() || b
+  } catch {
+    /* unrelated: compare against base itself */
+  }
+  return makeDiff(file, await readObject(repo, mergeBase, from ?? file), await readObject(repo, h, file))
+}
+
+/** Author names in the history, most active first (for the graph filter) */
+export async function getAuthors(repo: string): Promise<string[]> {
+  if (!(await hasHead(git(repo)))) return []
+  const out = await git(repo).raw(['log', '--all', '--exclude=refs/stash', '--max-count=5000', '--format=%an'])
+  const counts = new Map<string, number>()
+  for (const name of out.split('\n').filter(Boolean)) counts.set(name, (counts.get(name) ?? 0) + 1)
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([n]) => n)
+}
+
+// ---------------------------------------------------------------------------
+// Repository management: submodules, LFS, identity, .gitignore
+// ---------------------------------------------------------------------------
+
+export async function listSubmodules(repo: string): Promise<SubmoduleInfo[]> {
+  const root = repoService.require(repo).path
+  try {
+    await fs.access(path.join(root, '.gitmodules'))
+  } catch {
+    return []
+  }
+  const g = git(repo)
+  // submodule.<name>.path / .url from .gitmodules
+  const cfg = await g.raw(['config', '-f', '.gitmodules', '--get-regexp', '^submodule\\..*\\.(path|url)$']).catch(() => '')
+  const byPath = new Map<string, { name: string; url: string | null }>()
+  const names = new Map<string, { path?: string; url?: string }>()
+  for (const line of cfg.split('\n').filter(Boolean)) {
+    const m = /^submodule\.(.+)\.(path|url) (.*)$/.exec(line)
+    if (!m) continue
+    const e = names.get(m[1]) ?? {}
+    e[m[2] as 'path' | 'url'] = m[3]
+    names.set(m[1], e)
+  }
+  for (const [name, e] of names) if (e.path) byPath.set(e.path, { name, url: e.url ?? null })
+  const out = await g.raw(['submodule', 'status']).catch(() => '')
+  const list: SubmoduleInfo[] = []
+  for (const line of out.split('\n').filter(Boolean)) {
+    // "-<sha> path" uninitialised, " <sha> path (desc)" ok, "+<sha> path" other commit checked out, "U..." conflict
+    const m = /^([ +\-U])([0-9a-f]+) (.+?)(?: \(.*\))?$/.exec(line)
+    if (!m) continue
+    const info = byPath.get(m[3])
+    list.push({
+      name: info?.name ?? m[3],
+      path: m[3],
+      url: info?.url ?? null,
+      commit: m[2],
+      state: m[1] === '-' ? 'uninitialized' : m[1] === '+' ? 'changed' : m[1] === 'U' ? 'conflict' : 'ok',
+    })
+  }
+  return list
+}
+
+/** Clone / check out submodules at the commits the repository expects (all, or one path) */
+export async function updateSubmodules(repo: string, subPath?: string) {
+  if (subPath !== undefined) safeJoin(repo, subPath)
+  try {
+    await netGit(repo).raw(['submodule', 'update', '--init', '--recursive', ...(subPath ? ['--', subPath] : [])])
+  } catch (err) {
+    throw friendlyRemoteError(err, 'fetch')
+  }
+}
+
+export async function lfsInfo(repo: string): Promise<LfsInfo> {
+  const g = git(repo)
+  let version: string | null = null
+  try {
+    const out = (await g.raw(['lfs', 'version'])).trim()
+    version = /git-lfs\/(\S+)/.exec(out)?.[1] ?? (out || null)
+  } catch {
+    /* not installed */
+  }
+  let files = 0
+  try {
+    // Files whose filter attribute is lfs — works whether or not git-lfs is installed
+    files = (await g.raw(['ls-files', ':(attr:filter=lfs)'])).split('\n').filter(Boolean).length
+  } catch {
+    /* old git */
+  }
+  let used = files > 0
+  if (!used) {
+    try {
+      used = /filter=lfs/.test(await fs.readFile(safeJoin(repo, '.gitattributes'), 'utf8'))
+    } catch {
+      /* no .gitattributes */
+    }
+  }
+  return { used, installed: version !== null, version, files }
+}
+
+async function configGet(repo: string, key: string, scope?: '--local' | '--global'): Promise<string | null> {
+  try {
+    return (await git(repo).raw(['config', ...(scope ? [scope] : []), '--get', key])).trim() || null
+  } catch {
+    return null
+  }
+}
+
+export async function getIdentity(repo: string): Promise<RepoIdentity> {
+  const [ln, le, gn, ge] = await Promise.all([
+    configGet(repo, 'user.name', '--local'),
+    configGet(repo, 'user.email', '--local'),
+    configGet(repo, 'user.name', '--global'),
+    configGet(repo, 'user.email', '--global'),
+  ])
+  return { local: { name: ln, email: le }, inherited: { name: gn, email: ge } }
+}
+
+/** Set (or with an empty value, clear) this repository's own user.name / user.email */
+export async function setIdentity(repo: string, name: string, email: string) {
+  const g = git(repo)
+  const clean = (v: unknown, what: string) => {
+    const s = typeof v === 'string' ? v.trim() : ''
+    if (/[\r\n\0]/.test(s)) throw new Error(`The ${what} can't contain line breaks`)
+    return s
+  }
+  const n = clean(name, 'name')
+  const e = clean(email, 'email')
+  if (e && !/^[^\s@<>]+@[^\s@<>]+$/.test(e)) throw new Error(`"${e}" doesn't look like an email address`)
+  for (const [key, value] of [['user.name', n], ['user.email', e]] as const) {
+    if (value) await g.raw(['config', '--local', key, value])
+    else if (await configGet(repo, key, '--local')) await g.raw(['config', '--local', '--unset', key])
+  }
+}
+
+export async function readGitignore(repo: string): Promise<string> {
+  try {
+    return await fs.readFile(safeJoin(repo, '.gitignore'), 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+export async function writeGitignore(repo: string, content: string) {
+  if (typeof content !== 'string') throw new Error('Invalid .gitignore content')
+  if (content.length > MAX_DIFF_BYTES) throw new Error('.gitignore is too large')
+  await fs.writeFile(safeJoin(repo, '.gitignore'), content, 'utf8')
+}
+
+/** Add a pattern (e.g. an untracked file's path) to the root .gitignore */
+export async function addToGitignore(repo: string, pattern: string) {
+  const p = typeof pattern === 'string' ? pattern.trim() : ''
+  if (!p || /[\r\n\0]/.test(p)) throw new Error('Invalid ignore pattern')
+  const current = await readGitignore(repo)
+  if (current.split(/\r?\n/).some((l) => l.trim() === p)) return
+  const eol = current.includes('\r\n') ? '\r\n' : '\n'
+  await writeGitignore(repo, current + (current && !current.endsWith('\n') ? eol : '') + p + eol)
+}
+
+/** Would `file` be ignored, and by which rule? */
+export async function checkIgnore(repo: string, file: string): Promise<IgnoreCheck> {
+  const p = typeof file === 'string' ? file.trim().replace(/\\/g, '/') : ''
+  if (!p) throw new Error('Enter a path to test')
+  safeJoin(repo, p)
+  const g = git(repo)
+  const tracked = !!(await g.raw(['ls-files', '--', p]).catch(() => '')).trim()
+  // --no-index: also answer for files that are tracked (rules would apply if they weren't)
+  const out = (await g.raw(['check-ignore', '-v', '--no-index', '--', p]).catch(() => '')).trim()
+  // "<source>:<line>:<pattern>\t<path>"
+  const m = /^(.*):(\d+):(.*)\t/.exec(out)
+  if (!m) return { ignored: false, rule: null, tracked }
+  const rule = { source: m[1], line: Number(m[2]), pattern: m[3] }
+  return { ignored: !rule.pattern.startsWith('!'), rule, tracked }
 }
 
 // ---------------------------------------------------------------------------
