@@ -1,7 +1,18 @@
 import { useMemo } from 'react'
 import { create } from 'zustand'
 import { gitFor, ipc } from '../services/ipc'
-import type { BranchList, Commit, HistoryState, PullMode, RepoInfo, RepoStatus } from '../types/git'
+import type {
+  BranchList,
+  Commit,
+  ConflictResolution,
+  HistoryState,
+  OperationKind,
+  PullMode,
+  RepoInfo,
+  RepoStatus,
+  ResetMode,
+  RewriteResult,
+} from '../types/git'
 import { toast } from './toast.store'
 
 /** What the right-hand panel shows: the working copy ("wip"), a commit hash, or nothing */
@@ -11,6 +22,7 @@ export type Selection = 'wip' | string | null
 export type DiffTarget =
   | { kind: 'working'; path: string; staged: boolean; from?: string }
   | { kind: 'commit'; hash: string; path: string; from?: string }
+  | { kind: 'conflict'; path: string }
 
 /** Everything that belongs to one tab */
 interface Session {
@@ -87,6 +99,35 @@ interface RepoState extends Session {
   push: () => Promise<void>
   undo: () => Promise<void>
   redo: () => Promise<void>
+
+  /** Merge a local or remote branch into the checked-out branch */
+  merge: (from: string, noFastForward?: boolean) => Promise<boolean>
+  /** Open the conflict resolver for a file */
+  openConflict: (path: string) => void
+  resolveConflict: (path: string, resolution: ConflictResolution) => Promise<boolean>
+  /** Commit the merge (or continue the cherry-pick / rebase…) once every conflict is resolved */
+  continueOperation: (message?: string) => Promise<boolean>
+  abortOperation: () => Promise<boolean>
+
+  stashPush: (message: string, includeUntracked: boolean) => Promise<boolean>
+  /** Apply a stash (`pop` also drops it) */
+  stashApply: (ref: string, pop: boolean) => Promise<boolean>
+  stashDrop: (ref: string) => Promise<boolean>
+  /** Tag `target` (default HEAD); a message makes it an annotated tag */
+  createTag: (name: string, target?: string, message?: string) => Promise<boolean>
+  deleteTag: (name: string, fromRemote: boolean) => Promise<boolean>
+  /** Push one tag, or all tags when `name` is omitted */
+  pushTags: (name?: string) => Promise<boolean>
+  /** Throw away unstaged changes to these files (untracked ones are deleted) */
+  discard: (files: string[]) => Promise<boolean>
+
+  /** Rebase the checked-out branch onto another branch */
+  rebase: (onto: string) => Promise<boolean>
+  cherryPick: (hash: string) => Promise<boolean>
+  revert: (hash: string) => Promise<boolean>
+  reset: (hash: string, mode: ResetMode) => Promise<boolean>
+  /** Rewrite the last commit with the staged changes and a new message */
+  amend: (summary: string, description: string) => Promise<boolean>
 }
 
 const emptySession = (repo: RepoInfo | null = null): Session => ({
@@ -130,6 +171,13 @@ function saveTabs() {
   ipc.saveOpenTabs({ repos, active }).catch((err) => console.warn('saving tabs failed', err))
 }
 let focusCounter = 0
+
+export const OPERATION_NAME: Record<OperationKind, string> = {
+  merge: 'merge',
+  'cherry-pick': 'cherry-pick',
+  revert: 'revert',
+  rebase: 'rebase',
+}
 const newTabId = () => `tab-${++tabCounter}`
 
 const firstTabId = newTabId()
@@ -161,6 +209,11 @@ export const useRepoStore = create<RepoState>((set, get) => {
   /** Keep an open working-copy diff valid after the file lists change */
   const reconcileDiff = (tabId: string, status: RepoStatus) => {
     const d = sessionOf(tabId)?.openDiff
+    if (d?.kind === 'conflict') {
+      // Resolved (or the merge was aborted) outside the resolver
+      if (!status.conflicted.includes(d.path)) patch(tabId, { openDiff: null })
+      return
+    }
     if (!d || d.kind !== 'working') return
     const list = d.staged ? status.staged : status.unstaged
     if (list.some((f) => f.path === d.path)) return
@@ -221,6 +274,25 @@ export const useRepoStore = create<RepoState>((set, get) => {
       patch(get().activeTabId, emptySession(repo))
     }
     await Promise.all([loadAll(get().activeTabId), get().loadRecent()])
+  }
+
+  /** After a merge / pull stopped on conflicts: open the WIP panel on the first conflicted file */
+  const showConflicts = (tabId: string, files: string[], what: string, finish = 'complete the merge') => {
+    const n = files.length
+    toast.error(`${what} stopped with ${n} conflicted file${n === 1 ? '' : 's'}. Pick which changes to keep, then ${finish}.`)
+    patch(tabId, { selected: 'wip', openDiff: { kind: 'conflict', path: files[0] } })
+  }
+
+  /** Toast + view after a rebase / cherry-pick / revert */
+  const afterMove = (tabId: string, r: RewriteResult | undefined, doing: string, done: string) => {
+    if (!r) return
+    if (r.conflicts.length) showConflicts(tabId, r.conflicts, doing, 'continue from the banner above the graph')
+    else toast.success(`${done} (Undo goes back)`)
+  }
+  /** Select the new HEAD commit once the log is reloaded */
+  const focusNewHead = (tabId: string) => {
+    const head = sessionOf(tabId)?.commits.find((c) => c.refs.some((r) => r.current || r.type === 'head'))
+    if (head && tabId === get().activeTabId) get().focusCommit(head.hash)
   }
 
   const withBusy = async <T>(label: string, fn: () => Promise<T>) => {
@@ -470,7 +542,9 @@ export const useRepoStore = create<RepoState>((set, get) => {
       const a = active()
       if (!a) return
       const r = await withBusy('Pulling…', () => a.git.pull(mode))
-      if (r) {
+      if (r?.conflicts?.length) {
+        showConflicts(a.tabId, r.conflicts, `Pull into '${r.branch}'`)
+      } else if (r) {
         toast.success(
           r.commits
             ? `Pulled ${r.commits} commit${r.commits === 1 ? '' : 's'} into '${r.branch}'`
@@ -491,6 +565,208 @@ export const useRepoStore = create<RepoState>((set, get) => {
         )
       }
       await loadAll(a.tabId)
+    },
+
+    // ---- merge & conflicts --------------------------------------------------
+    merge: async (from, noFastForward) => {
+      const a = active()
+      if (!a) return false
+      const r = await withBusy(`Merging ${from}…`, () => a.git.merge(from, noFastForward))
+      if (r?.conflicts.length) {
+        showConflicts(a.tabId, r.conflicts, `Merging '${r.from}' into '${r.branch}'`)
+      } else if (r) {
+        const plural = `${r.commits} commit${r.commits === 1 ? '' : 's'}`
+        toast.success(
+          r.commits === 0
+            ? `'${r.branch}' already contains '${r.from}'`
+            : r.fastForward
+              ? `Fast-forwarded '${r.branch}' to '${r.from}' (${plural})`
+              : `Merged '${r.from}' into '${r.branch}' (${plural})`,
+        )
+      }
+      await loadAll(a.tabId)
+      return !!r
+    },
+    openConflict: (path) => set({ selected: 'wip', openDiff: { kind: 'conflict', path } }),
+    resolveConflict: async (path, resolution) => {
+      const a = active()
+      if (!a) return false
+      const d = sessionOf(a.tabId)?.openDiff
+      const wasOpen = d?.kind === 'conflict' && d.path === path
+      const ok = await attempt(() => a.git.resolveConflict(path, resolution).then(() => true))
+      await loadStatus(a.tabId)
+      if (!ok) return false
+      // Move straight on to the next conflicted file
+      const left = sessionOf(a.tabId)?.status?.conflicted ?? []
+      const next = left.find((p) => p > path) ?? left[0]
+      if (wasOpen && next) patch(a.tabId, { openDiff: { kind: 'conflict', path: next } })
+      if (left.length === 0) toast.success('All conflicts resolved — complete the merge to finish')
+      return true
+    },
+    continueOperation: async (message) => {
+      const a = active()
+      if (!a) return false
+      const kind = sessionOf(a.tabId)?.status?.operation?.kind ?? 'merge'
+      const still = await withBusy(`Completing ${OPERATION_NAME[kind]}…`, () =>
+        a.git.continueOperation(message).then((op) => ({ op })),
+      )
+      if (still) {
+        if (still.op) toast.info(`The ${OPERATION_NAME[still.op.kind]} continued and stopped again — resolve the next conflicts`)
+        else toast.success(`${OPERATION_NAME[kind][0].toUpperCase()}${OPERATION_NAME[kind].slice(1)} completed`)
+        if (sessionOf(a.tabId)?.openDiff?.kind !== 'commit') patch(a.tabId, { openDiff: null })
+      }
+      await loadAll(a.tabId)
+      return !!still
+    },
+    abortOperation: async () => {
+      const a = active()
+      if (!a) return false
+      const kind = await withBusy('Aborting…', () => a.git.abortOperation())
+      if (kind) toast.info(`${OPERATION_NAME[kind][0].toUpperCase()}${OPERATION_NAME[kind].slice(1)} aborted — everything is back to how it was`)
+      if (sessionOf(a.tabId)?.openDiff?.kind !== 'commit') patch(a.tabId, { openDiff: null })
+      await loadAll(a.tabId)
+      return !!kind
+    },
+
+    // ---- stash --------------------------------------------------------------
+    stashPush: async (message, includeUntracked) => {
+      const a = active()
+      if (!a) return false
+      const ok = await withBusy('Stashing…', () => a.git.stashPush(message, includeUntracked).then(() => true))
+      if (ok) {
+        toast.success(message.trim() ? `Stashed changes: ${message.trim()}` : 'Stashed your changes')
+        if (sessionOf(a.tabId)?.openDiff?.kind === 'working') patch(a.tabId, { openDiff: null })
+      }
+      await loadAll(a.tabId)
+      return !!ok
+    },
+    stashApply: async (ref, pop) => {
+      const a = active()
+      if (!a) return false
+      const r = await withBusy(pop ? 'Popping stash…' : 'Applying stash…', () => a.git.stashApply(ref, pop))
+      if (r?.conflicts.length) {
+        const n = r.conflicts.length
+        toast.error(
+          `The stash conflicts with your current files (${n} file${n === 1 ? '' : 's'}). Pick which changes to keep.` +
+            (pop ? ' The stash was kept, so nothing is lost — drop it once you are done.' : ''),
+        )
+        patch(a.tabId, { selected: 'wip', openDiff: { kind: 'conflict', path: r.conflicts[0] } })
+      } else if (r) {
+        toast.success(r.dropped ? 'Popped the stash' : 'Applied the stash (it is still in the list)')
+        // Show the restored changes (a popped stash's own diff no longer exists)
+        patch(a.tabId, { selected: 'wip', openDiff: null })
+      }
+      await loadAll(a.tabId)
+      return !!r
+    },
+    stashDrop: async (ref) => {
+      const a = active()
+      if (!a) return false
+      const commit = sessionOf(a.tabId)?.branches?.stashes.find((st) => st.ref === ref)?.commit
+      const ok = await attempt(() => a.git.stashDrop(ref).then(() => true))
+      if (ok) {
+        toast.success('Dropped the stash (Undo brings it back)')
+        // Close its panel / diff: they would show a stash that is gone
+        const cur = sessionOf(a.tabId)
+        if (commit && cur?.selected === commit) patch(a.tabId, { selected: null, openDiff: null })
+      }
+      await loadAll(a.tabId)
+      return !!ok
+    },
+
+    // ---- tags ---------------------------------------------------------------
+    createTag: async (name, target, message) => {
+      const a = active()
+      if (!a) return false
+      const ok = await attempt(() => a.git.createTag(name, target, message).then(() => true))
+      if (ok) toast.success(`Created tag ${name.trim()}`)
+      await Promise.all([loadBranches(a.tabId), loadLog(a.tabId)])
+      return !!ok
+    },
+    deleteTag: async (name, fromRemote) => {
+      const a = active()
+      if (!a) return false
+      const r = await withBusy(`Deleting tag ${name}…`, () => a.git.deleteTag(name, fromRemote).then((x) => ({ x })))
+      if (r) toast.success(r.x ? `Deleted tag ${name} here and on ${r.x.remote}` : `Deleted tag ${name}`)
+      await loadAll(a.tabId)
+      return !!r
+    },
+    pushTags: async (name) => {
+      const a = active()
+      if (!a) return false
+      const r = await withBusy(name ? `Pushing tag ${name}…` : 'Pushing tags…', () => a.git.pushTags(name))
+      if (r) toast.success(name ? `Pushed tag ${name} to ${r.remote}` : `Pushed all tags to ${r.remote}`)
+      return !!r
+    },
+
+    // ---- discard ------------------------------------------------------------
+    discard: async (files) => {
+      const a = active()
+      if (!a) return false
+      const ok = await attempt(() => a.git.discard(files).then(() => true))
+      if (ok) toast.success(`Discarded changes to ${files.length === 1 ? files[0] : `${files.length} files`}`)
+      await loadStatus(a.tabId)
+      return !!ok
+    },
+
+    // ---- history rewriting --------------------------------------------------
+    rebase: async (onto) => {
+      const a = active()
+      if (!a) return false
+      const branch = sessionOf(a.tabId)?.status?.branch ?? 'the branch'
+      const r = await withBusy(`Rebasing onto ${onto}…`, () => a.git.rebase(onto))
+      afterMove(a.tabId, r, `Rebasing '${branch}' onto '${onto}'`, `Rebased '${branch}' onto '${onto}'`)
+      await loadAll(a.tabId)
+      // The commits got new hashes: show the new tip rather than a commit that is no longer on the branch
+      if (r && !r.conflicts.length) focusNewHead(a.tabId)
+      return !!r
+    },
+    cherryPick: async (hash) => {
+      const a = active()
+      if (!a) return false
+      const r = await withBusy('Cherry-picking…', () => a.git.cherryPick(hash))
+      afterMove(a.tabId, r, `Cherry-picking ${hash.slice(0, 7)}`, `Cherry-picked ${hash.slice(0, 7)}`)
+      await loadAll(a.tabId)
+      if (r && !r.conflicts.length) focusNewHead(a.tabId)
+      return !!r
+    },
+    revert: async (hash) => {
+      const a = active()
+      if (!a) return false
+      const r = await withBusy('Reverting…', () => a.git.revert(hash))
+      afterMove(a.tabId, r, `Reverting ${hash.slice(0, 7)}`, `Reverted ${hash.slice(0, 7)} with a new commit`)
+      await loadAll(a.tabId)
+      if (r && !r.conflicts.length) focusNewHead(a.tabId)
+      return !!r
+    },
+    reset: async (hash, mode) => {
+      const a = active()
+      if (!a) return false
+      const ok = await withBusy('Resetting…', () => a.git.reset(hash, mode).then(() => true))
+      if (ok) {
+        const branch = sessionOf(a.tabId)?.status?.branch ?? 'HEAD'
+        toast.success(
+          `Reset '${branch}' to ${hash.slice(0, 7)}` +
+            (mode === 'soft' ? ' — the changes are staged' : mode === 'mixed' ? ' — the changes are unstaged' : '') +
+            ' (Undo goes back)',
+        )
+        if (mode !== 'hard') patch(a.tabId, { selected: 'wip', openDiff: null })
+      }
+      await loadAll(a.tabId)
+      return !!ok
+    },
+    amend: async (summary, description) => {
+      const a = active()
+      if (!a) return false
+      const hash = await withBusy('Amending…', () => a.git.amend(summary, description))
+      if (hash) {
+        toast.success(`Amended the last commit (now ${hash.slice(0, 7)})`)
+        if (sessionOf(a.tabId)?.openDiff?.kind === 'working') patch(a.tabId, { openDiff: null })
+      }
+      await loadAll(a.tabId)
+      // The old commit was replaced: move the panel to the new one (unless the user is in the WIP panel)
+      if (hash && sessionOf(a.tabId)?.selected !== 'wip') focusNewHead(a.tabId)
+      return !!hash
     },
 
     // ---- undo / redo --------------------------------------------------------

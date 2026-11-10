@@ -56,3 +56,81 @@ textarea,
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* Conflict regions in the resolver's editor */
+.monaco-editor .conflict-head-ours {
+  background: #3fb95040;
+}
+.monaco-editor .conflict-ours {
+  background: #3fb9501c;
+}
+.monaco-editor .conflict-head-base {
+  background: #8b93a733;
+}
+.monaco-editor .conflict-base {
+  background: #8b93a714;
+}
+.monaco-editor .conflict-sep {
+  background: #8b93a72e;
+}
+.monaco-editor .conflict-theirs {
+  background: #6d8bff1c;
+}
+.monaco-editor .conflict-head-theirs {
+  background: #6d8bff40;
+}
+.monaco-editor .conflict-label-ours,
+.monaco-editor .conflict-label-theirs,
+.monaco-editor .conflict-label-base {
+  font-style: italic;
+  opacity: 0.75;
+}
+.monaco-editor .conflict-label-ours {
+  color: var(--color-ok);
+}
+.monaco-editor .conflict-label-theirs {
+  color: var(--color-accent);
+}
+.monaco-editor .conflict-label-base {
+  color: var(--color-muted);
+}
+
+/* Action bar above each conflict (a Monaco view zone) */
+.conflict-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-left: 2px;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.conflict-actions-title {
+  margin-right: 6px;
+  color: var(--color-warn);
+  font-weight: 600;
+}
+.conflict-actions-sep {
+  color: var(--color-muted);
+  opacity: 0.5;
+}
+.conflict-action {
+  cursor: pointer;
+  color: var(--color-fg);
+  background: none;
+  border: 0;
+  padding: 0;
+}
+.conflict-action:hover {
+  text-decoration: underline;
+}
+.conflict-action-ours {
+  color: var(--color-ok);
+}
+.conflict-action-theirs {
+  color: var(--color-accent);
+}
+.conflict-action-muted {
+  color: var(--color-muted);
+}

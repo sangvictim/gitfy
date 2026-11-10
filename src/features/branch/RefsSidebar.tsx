@@ -5,16 +5,29 @@ import { useRepoStore } from '../../store/repo.store'
 import { toast } from '../../store/toast.store'
 import type { Branch, RemoteInfo } from '../../types/git'
 import { DeleteBranchModal } from './DeleteBranchModal'
+import { ConfirmModal } from '../../components/ConfirmModal'
+import { CreateTagModal } from '../tag/CreateTagModal'
+import { DeleteTagModal } from '../tag/DeleteTagModal'
+import { RebaseModal } from '../rewrite/RebaseModal'
+import { MergeModal } from './MergeModal'
 import { RemoteModal } from './RemoteModal'
 
 type SectionId = 'local' | 'remote' | 'stashes' | 'tags'
 
 export function RefsSidebar() {
-  const { branches, checkout, busy, focusCommit, select, selected, fetchAll } = useRepoStore()
+  const { branches, checkout, busy, focusCommit, select, selected, fetchAll, stashApply, stashDrop, pushTags } =
+    useRepoStore()
   const [filter, setFilter] = useState('')
   const [open, setOpen] = useState<Record<SectionId, boolean>>({ local: false, remote: false, stashes: false, tags: false })
   const [collapsedRemotes, setCollapsedRemotes] = useState<Set<string>>(new Set())
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [merging, setMerging] = useState<string | null>(null)
+  const [rebasing, setRebasing] = useState<string | null>(null)
+  const [dropping, setDropping] = useState<{ ref: string; message: string } | null>(null)
+  const [creatingTag, setCreatingTag] = useState(false)
+  const [deletingTag, setDeletingTag] = useState<string | null>(null)
+  const hasRemote = (branches?.remotes.length ?? 0) > 0
+  const canMerge = !!branches?.current && !busy
   const [addingRemote, setAddingRemote] = useState(false)
   const [editingRemote, setEditingRemote] = useState<RemoteInfo | null>(null)
 
@@ -77,6 +90,18 @@ export function RefsSidebar() {
                 !b.current && (
                   <>
                     <RowAction disabled={!!busy} onClick={() => checkout(b.name)} label="Switch" />
+                    <RowAction
+                      disabled={!canMerge}
+                      onClick={() => setMerging(b.name)}
+                      label="Merge"
+                      title={`Merge ${b.name} into ${branches?.current ?? 'the current branch'}`}
+                    />
+                    <RowAction
+                      disabled={!canMerge}
+                      onClick={() => setRebasing(b.name)}
+                      label="Rebase"
+                      title={`Rebase ${branches?.current ?? 'the current branch'} onto ${b.name}`}
+                    />
                     <RowAction onClick={() => setDeleting(b.name)} icon="trash" label={`Delete ${b.name}`} danger />
                   </>
                 )
@@ -167,7 +192,23 @@ export function RefsSidebar() {
                       title={`${b.name} · ${b.commit.slice(0, 7)} ${b.label}\nDouble-click to check out`}
                       onClick={() => focusCommit(b.commit)}
                       onDoubleClick={() => !busy && checkout(b.name, true)}
-                      actions={<RowAction disabled={!!busy} onClick={() => checkout(b.name, true)} label="Checkout" />}
+                      actions={
+                        <>
+                          <RowAction disabled={!!busy} onClick={() => checkout(b.name, true)} label="Checkout" />
+                          <RowAction
+                            disabled={!canMerge}
+                            onClick={() => setMerging(b.name)}
+                            label="Merge"
+                            title={`Merge ${b.name} into ${branches?.current ?? 'the current branch'}`}
+                          />
+                          <RowAction
+                            disabled={!canMerge}
+                            onClick={() => setRebasing(b.name)}
+                            label="Rebase"
+                            title={`Rebase ${branches?.current ?? 'the current branch'} onto ${b.name}`}
+                          />
+                        </>
+                      }
                     />
                   ))}
               </div>
@@ -181,16 +222,61 @@ export function RefsSidebar() {
             <Row
               key={s.ref}
               icon="stash"
-              label={s.message}
+              label={stashLabel(s.message)}
               active={selected === s.commit}
-              title={`${s.ref}: ${s.message}`}
+              title={`${s.ref}: ${s.message}\nClick to see its changes · double-click to apply`}
               onClick={() => select(s.commit)}
+              onDoubleClick={() => !busy && stashApply(s.ref, false)}
+              actions={
+                <>
+                  <RowAction disabled={!!busy} onClick={() => stashApply(s.ref, false)} label="Apply" title="Apply — keep the stash in the list" />
+                  <RowAction disabled={!!busy} onClick={() => stashApply(s.ref, true)} label="Pop" title="Pop — apply and remove it from the list" />
+                  <RowAction onClick={() => setDropping(s)} icon="trash" label={`Drop ${s.ref}`} danger />
+                </>
+              }
             />
           ))}
         </Section>
 
-        <Section id="tags" icon="tag" label="Tags" count={tags.length} open={forced || open.tags} onToggle={toggle}>
-          {tags.length === 0 && <Empty>No tags</Empty>}
+        <Section
+          id="tags"
+          icon="tag"
+          label="Tags"
+          count={tags.length}
+          open={forced || open.tags}
+          onToggle={toggle}
+          headerAction={
+            <div className="mr-1.5 flex">
+              {hasRemote && (branches?.tags.length ?? 0) > 0 && (
+                <button
+                  disabled={!!busy}
+                  onClick={() => pushTags()}
+                  aria-label="Push all tags"
+                  title="Push all tags to the remote"
+                  className="rounded p-1 text-muted hover:bg-panel-2 hover:text-fg disabled:opacity-50"
+                >
+                  <Icon name="push" size={13} />
+                </button>
+              )}
+              <button
+                onClick={() => setCreatingTag(true)}
+                aria-label="Create tag"
+                title="Create a tag on the current commit"
+                className="rounded p-1 text-muted hover:bg-panel-2 hover:text-fg"
+              >
+                <Icon name="plus" size={13} />
+              </button>
+            </div>
+          }
+        >
+          {tags.length === 0 && (
+            <Empty>
+              No tags{' '}
+              <button onClick={() => setCreatingTag(true)} className="text-accent hover:underline">
+                Create tag
+              </button>
+            </Empty>
+          )}
           {tags.map((t) => (
             <Row
               key={t.name}
@@ -199,6 +285,14 @@ export function RefsSidebar() {
               active={selected === t.commit}
               title={`${t.name} · ${t.commit.slice(0, 7)}`}
               onClick={() => focusCommit(t.commit)}
+              actions={
+                <>
+                  {hasRemote && (
+                    <RowAction disabled={!!busy} onClick={() => pushTags(t.name)} icon="push" label={`Push tag ${t.name}`} />
+                  )}
+                  <RowAction onClick={() => setDeletingTag(t.name)} icon="trash" label={`Delete tag ${t.name}`} danger />
+                </>
+              }
             />
           ))}
         </Section>
@@ -209,6 +303,31 @@ export function RefsSidebar() {
       )}
       {editingRemote && <RemoteModal edit={editingRemote} onClose={() => setEditingRemote(null)} />}
       {deleting && <DeleteBranchModal name={deleting} onClose={() => setDeleting(null)} />}
+      {merging && <MergeModal from={merging} onClose={() => setMerging(null)} />}
+      {rebasing && <RebaseModal onto={rebasing} onClose={() => setRebasing(null)} />}
+      {creatingTag && (
+        <CreateTagModal
+          onClose={() => {
+            setCreatingTag(false)
+            setOpen((o) => ({ ...o, tags: true }))
+          }}
+        />
+      )}
+      {deletingTag && <DeleteTagModal name={deletingTag} onClose={() => setDeletingTag(null)} />}
+      {dropping && (
+        <ConfirmModal
+          title="Drop stash"
+          confirmLabel="Drop"
+          danger
+          onConfirm={() => stashDrop(dropping.ref)}
+          onClose={() => setDropping(null)}
+        >
+          <p>
+            Drop <span className="font-semibold">{dropping.message}</span>? Its changes are thrown away (Undo can bring the
+            stash back).
+          </p>
+        </ConfirmModal>
+      )}
     </aside>
   )
 }
@@ -288,7 +407,8 @@ function Row({
     >
       <Icon name={icon} size={13} className={cx('shrink-0', iconClass ?? 'text-muted')} />
       <span className={cx('min-w-0 flex-1 truncate', bold && 'font-semibold')}>{label}</span>
-      {actions && <div className="flex opacity-0 group-hover:opacity-100">{actions}</div>}
+      {/* Hidden (not just transparent) until hover, so long names get the full width */}
+      {actions && <div className="hidden shrink-0 group-hover:flex">{actions}</div>}
     </div>
   )
 }
@@ -296,12 +416,14 @@ function Row({
 function RowAction({
   onClick,
   label,
+  title,
   icon,
   danger,
   disabled,
 }: {
   onClick: () => void
   label: string
+  title?: string
   icon?: IconName
   danger?: boolean
   disabled?: boolean
@@ -313,8 +435,8 @@ function RowAction({
         e.stopPropagation()
         onClick()
       }}
-      aria-label={label}
-      title={label}
+      aria-label={title ?? label}
+      title={title ?? label}
       className={cx(
         'rounded px-1.5 py-0.5 text-[11px] hover:bg-bg disabled:opacity-50',
         icon ? (danger ? 'text-muted hover:text-danger' : 'text-muted hover:text-fg') : 'text-accent',
@@ -327,4 +449,9 @@ function RowAction({
 
 function Empty({ children, indent }: { children: React.ReactNode; indent?: boolean }) {
   return <p className={cx('py-1 text-xs text-muted', indent ? 'pl-10' : 'pl-7')}>{children}</p>
+}
+
+/** "On main: experiment" / "WIP on main: abc123 subject" -> "experiment" / "abc123 subject" */
+function stashLabel(message: string): string {
+  return message.replace(/^(?:WIP )?on [^:]+:\s*/i, '') || message
 }

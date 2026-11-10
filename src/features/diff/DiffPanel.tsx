@@ -4,7 +4,7 @@ import { useActiveGit, useRepoStore, type DiffTarget } from '../../store/repo.st
 import type { DiffContent } from '../../types/git'
 
 /** Full-width diff shown in place of the graph */
-export function DiffPanel({ target }: { target: DiffTarget }) {
+export function DiffPanel({ target }: { target: Exclude<DiffTarget, { kind: 'conflict' }> }) {
   const setOpenDiff = useRepoStore((s) => s.setOpenDiff)
   const git = useActiveGit()
   // Working-copy diffs refresh whenever the status is polled (the file may have been edited)

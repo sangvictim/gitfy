@@ -11,9 +11,11 @@ interface Props {
   onSelect: (f: FileChange) => void
   onToggle: (f: FileChange) => void
   onToggleAll: () => void
+  /** Offer "discard changes" (unstaged list only) */
+  onDiscard?: (files: FileChange[]) => void
 }
 
-export function FileList({ title, files, staged, selectedPath, onSelect, onToggle, onToggleAll }: Props) {
+export function FileList({ title, files, staged, selectedPath, onSelect, onToggle, onToggleAll, onDiscard }: Props) {
   const actionLabel = staged ? 'Unstage' : 'Stage'
   return (
     <section className="flex min-h-0 flex-1 flex-col">
@@ -21,6 +23,15 @@ export function FileList({ title, files, staged, selectedPath, onSelect, onToggl
         <span className="text-xs font-semibold tracking-wide text-muted uppercase">{title}</span>
         <span className="rounded-full bg-panel-2 px-1.5 text-[11px] text-muted">{files.length}</span>
         <div className="flex-1" />
+        {files.length > 0 && onDiscard && (
+          <button
+            onClick={() => onDiscard(files)}
+            title="Discard all unstaged changes"
+            className="h-6 rounded border border-border px-2 text-[11px] font-medium text-muted hover:border-danger/40 hover:text-danger"
+          >
+            Discard all
+          </button>
+        )}
         {files.length > 0 && (
           <button
             onClick={onToggleAll}
@@ -58,6 +69,19 @@ export function FileList({ title, files, staged, selectedPath, onSelect, onToggl
                 <span className={cx(f.type === 'deleted' && 'line-through opacity-70')}>{name}</span>
                 {dir && <span className="ml-1.5 text-xs text-muted">{dir}</span>}
               </span>
+              {onDiscard && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onDiscard([f])
+                  }}
+                  title={f.type === 'untracked' ? 'Delete this new file' : 'Discard changes'}
+                  aria-label={`Discard changes to ${f.path}`}
+                  className="rounded p-0.5 text-muted opacity-0 group-hover:opacity-100 hover:bg-bg hover:text-danger"
+                >
+                  <Icon name="trash" size={13} />
+                </button>
+              )}
               <button
                 onClick={(e) => {
                   e.stopPropagation()

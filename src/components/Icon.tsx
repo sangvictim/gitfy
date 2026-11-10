@@ -38,6 +38,7 @@ const paths = {
   pull: 'M12 3v13m0 0-4.5-4.5M12 16l4.5-4.5M5 21h14',
   push: 'M12 21V8m0 0-4.5 4.5M12 8l4.5 4.5M5 3h14',
   down: 'm6 9 6 6 6-6',
+  unstash: 'M4 12h16v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1zM12 3v6m0-6-3 3m3-3 3 3M10 16h4',
 } as const
 
 export type IconName = keyof typeof paths

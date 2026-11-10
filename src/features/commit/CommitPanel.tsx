@@ -6,6 +6,10 @@ import { cx, fullDate, splitPath } from '../../lib/format'
 import { useActiveGit, useRepoStore } from '../../store/repo.store'
 import { toast } from '../../store/toast.store'
 import type { Commit, CommitFile } from '../../types/git'
+import { AmendModal } from '../rewrite/AmendModal'
+import { PickRevertModal } from '../rewrite/PickRevertModal'
+import { ResetModal } from '../rewrite/ResetModal'
+import { CreateTagModal } from '../tag/CreateTagModal'
 
 export function CommitPanel({ hash }: { hash: string }) {
   const { commits, select, openDiff, setOpenDiff, focusCommit } = useRepoStore()
@@ -13,6 +17,9 @@ export function CommitPanel({ hash }: { hash: string }) {
   const fromList = commits.find((c) => c.hash === hash)
   const [fetched, setFetched] = useState<Commit | null>(null)
   const [files, setFiles] = useState<CommitFile[] | null>(null)
+  const [tagging, setTagging] = useState(false)
+  const stash = useRepoStore((s) => s.branches?.stashes.find((st) => st.commit === hash) ?? null)
+  const isStash = !!stash
   const commit = fromList ?? (fetched?.hash === hash ? fetched : null)
 
   // Commits outside the loaded log (e.g. stashes) are fetched individually
@@ -56,7 +63,7 @@ export function CommitPanel({ hash }: { hash: string }) {
       onClose={() => select(null)}
       title={
         <span className="flex items-center gap-1.5">
-          commit: <span className="font-mono">{commit.shortHash}</span>
+          {isStash ? 'stash' : 'commit'}: <span className="font-mono">{isStash ? stash!.ref : commit.shortHash}</span>
           <button
             onClick={() => navigator.clipboard.writeText(commit.hash).then(() => toast.info('Commit hash copied'))}
             className="rounded p-0.5 text-muted hover:bg-panel-2 hover:text-fg"
@@ -65,6 +72,16 @@ export function CommitPanel({ hash }: { hash: string }) {
           >
             <Icon name="copy" size={13} />
           </button>
+          {!isStash && (
+            <button
+              onClick={() => setTagging(true)}
+              className="ml-1 flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-panel-2 hover:text-fg"
+              title="Create a tag on this commit"
+            >
+              <Icon name="tag" size={12} /> Tag
+            </button>
+          )}
+          {tagging && <CreateTagModal target={commit.hash} onClose={() => setTagging(false)} />}
         </span>
       }
     >
@@ -72,6 +89,8 @@ export function CommitPanel({ hash }: { hash: string }) {
         <p className="text-[15px] leading-snug break-words">{commit.subject}</p>
         {commit.body && <p className="mt-2 text-xs whitespace-pre-wrap text-muted">{commit.body}</p>}
       </div>
+
+      {!isStash && <CommitActions commit={commit} />}
 
       <div className="flex items-start gap-2.5 px-3">
         <span
@@ -86,7 +105,7 @@ export function CommitPanel({ hash }: { hash: string }) {
           </p>
           <p className="text-xs text-muted">authored {fullDate(commit.date)}</p>
         </div>
-        {commit.parents.length > 0 && (
+        {commit.parents.length > 0 && !isStash && (
           <div className="shrink-0 text-right text-xs text-muted">
             parent{commit.parents.length > 1 ? 's' : ''}:{' '}
             {commit.parents.map((p) => (
@@ -157,5 +176,106 @@ export function PanelShell({
       </div>
       <div className="flex min-h-0 flex-1 flex-col">{children}</div>
     </aside>
+  )
+}
+
+/** Cherry-pick / revert / reset, depending on how the commit relates to the checked-out branch */
+function CommitActions({ commit }: { commit: Commit }) {
+  const git = useActiveGit()
+  const busy = useRepoStore((s) => s.busy)
+  const branch = useRepoStore((s) => s.status?.branch ?? null)
+  const operation = useRepoStore((s) => s.status?.operation ?? null)
+  // Re-check whenever HEAD moves
+  const head = useRepoStore((s) => s.commits.find((c) => c.refs.some((r) => r.current || r.type === 'head'))?.hash)
+  const [rel, setRel] = useState<{ hash: string; isHead: boolean; inHead: boolean } | null>(null)
+  const [modal, setModal] = useState<'cherry-pick' | 'revert' | 'reset' | 'amend' | null>(null)
+
+  useEffect(() => {
+    if (!git) return
+    let cancelled = false
+    git
+      .commitRelation(commit.hash)
+      .then((r) => !cancelled && setRel({ hash: commit.hash, ...r }))
+      .catch(() => !cancelled && setRel(null))
+    return () => {
+      cancelled = true
+    }
+  }, [git, commit.hash, head])
+
+  if (!rel || rel.hash !== commit.hash) return null
+  const target = branch ?? 'HEAD'
+  const disabled = !!busy || !!operation
+  const why = operation ? `Finish or abort the ${operation.kind} first` : undefined
+
+  return (
+    <div className="mx-3 -mt-1 mb-3 flex flex-wrap gap-1.5">
+      {!rel.inHead && (
+        <ActionButton
+          icon="commit"
+          label={`Cherry-pick onto ${target}`}
+          title={why ?? `Copy this commit onto ${target}`}
+          disabled={disabled}
+          onClick={() => setModal('cherry-pick')}
+        />
+      )}
+      {rel.inHead && (
+        <ActionButton
+          icon="undo"
+          label="Revert"
+          title={why ?? 'Add a commit that undoes this one'}
+          disabled={disabled}
+          onClick={() => setModal('revert')}
+        />
+      )}
+      {rel.isHead && (
+        <ActionButton
+          icon="pencil"
+          label="Amend"
+          title={why ?? 'Edit the message of this commit (and add staged changes)'}
+          disabled={disabled}
+          onClick={() => setModal('amend')}
+        />
+      )}
+      {!rel.isHead && (
+        <ActionButton
+          icon="history"
+          label={`Reset ${target} to here`}
+          title={why ?? `Move ${target} to this commit`}
+          disabled={disabled}
+          onClick={() => setModal('reset')}
+        />
+      )}
+      {(modal === 'cherry-pick' || modal === 'revert') && (
+        <PickRevertModal action={modal} commit={commit} onClose={() => setModal(null)} />
+      )}
+      {modal === 'reset' && <ResetModal commit={commit} onClose={() => setModal(null)} />}
+      {modal === 'amend' && <AmendModal onClose={() => setModal(null)} />}
+    </div>
+  )
+}
+
+function ActionButton({
+  icon,
+  label,
+  title,
+  disabled,
+  onClick,
+}: {
+  icon: 'commit' | 'undo' | 'history' | 'pencil'
+  label: string
+  title: string
+  disabled: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      disabled={disabled}
+      onClick={onClick}
+      title={title}
+      className="flex h-7 max-w-full items-center gap-1.5 rounded-md border border-border bg-panel-2 px-2.5 text-[12px] hover:border-muted disabled:opacity-50"
+    >
+      <Icon name={icon} size={13} className="shrink-0 text-muted" />
+      <span className="truncate">{label}</span>
+    </button>
   )
 }

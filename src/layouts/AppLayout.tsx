@@ -2,6 +2,8 @@ import { useEffect } from 'react'
 import { RefsSidebar } from '../features/branch/RefsSidebar'
 import { CommitPanel } from '../features/commit/CommitPanel'
 import { GraphView } from '../features/commit/GraphView'
+import { ConflictResolver } from '../features/conflict/ConflictResolver'
+import { OperationBanner } from '../features/conflict/OperationBanner'
 import { DiffPanel } from '../features/diff/DiffPanel'
 import { WipPanel } from '../features/staging/WipPanel'
 import { useRepoStore } from '../store/repo.store'
@@ -31,7 +33,18 @@ export function AppLayout() {
       <Header />
       <div className="flex min-h-0 flex-1">
         <RefsSidebar />
-        <main className="min-w-0 flex-1">{openDiff ? <DiffPanel target={openDiff} /> : <GraphView />}</main>
+        <main className="flex min-w-0 flex-1 flex-col">
+          <OperationBanner />
+          <div className="min-h-0 flex-1">
+            {openDiff?.kind === 'conflict' ? (
+              <ConflictResolver key={openDiff.path} path={openDiff.path} />
+            ) : openDiff ? (
+              <DiffPanel target={openDiff} />
+            ) : (
+              <GraphView />
+            )}
+          </div>
+        </main>
         {selected === 'wip' ? <WipPanel /> : selected ? <CommitPanel hash={selected} /> : null}
       </div>
     </div>

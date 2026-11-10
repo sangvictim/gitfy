@@ -5,18 +5,29 @@ import type {
   CheckoutResult,
   Commit,
   CommitFile,
+  ConflictDetail,
+  ConflictResolution,
   DiffContent,
   HistoryState,
+  MergeResult,
+  OperationKind,
   PullMode,
   PullResult,
   PushResult,
   IpcResult,
   OpenTabs,
   RepoInfo,
+  RepoOperation,
   RepoStatus,
   Settings,
   SshKeyInfo,
   SshTestResult,
+  CommitRelation,
+  ResetMode,
+  RewriteInfo,
+  RewriteResult,
+  StashApplyResult,
+  TagPushResult,
 } from '../src/types/git'
 
 const invoke = <T>(channel: string, ...args: unknown[]) =>
@@ -94,6 +105,33 @@ const api = {
     fetchAll: (repo: string) => invoke<void>('git:fetchAll', repo),
     pull: (repo: string, mode?: PullMode) => invoke<PullResult>('git:pull', repo, mode),
     push: (repo: string) => invoke<PushResult>('git:push', repo),
+    merge: (repo: string, from: string, noFastForward?: boolean) =>
+      invoke<MergeResult>('git:merge', repo, from, noFastForward),
+    conflict: (repo: string, file: string) => invoke<ConflictDetail>('git:conflict', repo, file),
+    resolveConflict: (repo: string, file: string, resolution: ConflictResolution) =>
+      invoke<void>('git:resolveConflict', repo, file, resolution),
+    continueOperation: (repo: string, message?: string) =>
+      invoke<RepoOperation | null>('git:continueOperation', repo, message),
+    abortOperation: (repo: string) => invoke<OperationKind>('git:abortOperation', repo),
+    rewriteInfo: (repo: string, base: string) => invoke<RewriteInfo>('git:rewriteInfo', repo, base),
+    commitRelation: (repo: string, hash: string) => invoke<CommitRelation>('git:commitRelation', repo, hash),
+    rebase: (repo: string, onto: string) => invoke<RewriteResult>('git:rebase', repo, onto),
+    cherryPick: (repo: string, hash: string) => invoke<RewriteResult>('git:cherryPick', repo, hash),
+    revert: (repo: string, hash: string) => invoke<RewriteResult>('git:revert', repo, hash),
+    reset: (repo: string, hash: string, mode: ResetMode) => invoke<void>('git:reset', repo, hash, mode),
+    headMessage: (repo: string) => invoke<string>('git:headMessage', repo),
+    amend: (repo: string, summary: string, description?: string) =>
+      invoke<string>('git:amend', repo, summary, description),
+    stashPush: (repo: string, message?: string, includeUntracked?: boolean) =>
+      invoke<void>('git:stashPush', repo, message, includeUntracked),
+    stashApply: (repo: string, ref: string, pop?: boolean) => invoke<StashApplyResult>('git:stashApply', repo, ref, pop),
+    stashDrop: (repo: string, ref: string) => invoke<void>('git:stashDrop', repo, ref),
+    createTag: (repo: string, name: string, target?: string, message?: string) =>
+      invoke<void>('git:createTag', repo, name, target, message),
+    deleteTag: (repo: string, name: string, fromRemote?: boolean) =>
+      invoke<TagPushResult | null>('git:deleteTag', repo, name, fromRemote),
+    pushTags: (repo: string, name?: string) => invoke<TagPushResult>('git:pushTags', repo, name),
+    discard: (repo: string, files: string[]) => invoke<void>('git:discard', repo, files),
     history: (repo: string) => invoke<HistoryState>('git:history', repo),
     undo: (repo: string) => invoke<string>('git:undo', repo),
     redo: (repo: string) => invoke<string>('git:redo', repo),

@@ -351,11 +351,17 @@ function WipCounts() {
   const all = [...status.unstaged, ...status.staged]
   const paths = new Set(all.map((f) => f.path))
   const count = (t: string[]) => new Set(all.filter((f) => t.includes(f.type)).map((f) => f.path)).size
-  const modified = count(['modified', 'renamed', 'typechange', 'conflicted'])
+  const conflicts = status.conflicted.length
+  const modified = count(['modified', 'renamed', 'typechange'])
   const added = count(['added', 'untracked'])
   const deleted = count(['deleted'])
   return (
     <span className="flex items-center gap-2 text-xs" title={`${paths.size} changed file(s)`}>
+      {conflicts > 0 && (
+        <span className="rounded bg-danger/15 px-1.5 font-medium text-danger">
+          ! {conflicts} conflict{conflicts === 1 ? '' : 's'}
+        </span>
+      )}
       {modified > 0 && <span className="text-warn">✎ {modified}</span>}
       {added > 0 && <span className="text-ok">+ {added}</span>}
       {deleted > 0 && <span className="text-danger">− {deleted}</span>}

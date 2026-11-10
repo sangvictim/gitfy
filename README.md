@@ -185,7 +185,11 @@ src/                      Renderer (React)
     commit/               Commit graph, graph layout, ref badges, detail panel, search, commit form
     staging/              WIP panel (unstaged / staged files), file lists
     diff/                 Full-width diff shown in place of the graph
-    branch/               Refs sidebar, create / delete dialogs
+    branch/               Refs sidebar, create / delete / merge dialogs
+    stash/                Stash dialog
+    tag/                  Create / delete tag dialogs
+    rewrite/              Rebase, reset, cherry-pick / revert and amend dialogs
+    conflict/             Merge banner, conflict list, conflict resolver, conflict-marker parser
     settings/             Preferences, SSH settings
   components/             Shared UI (Button, Modal, Toaster, DiffViewer, Icon…)
   layouts/                AppLayout, Header, TabBar, Sidebar
@@ -224,20 +228,19 @@ Development data is kept separate so it never leaks into a release.
 - [x] **Sprint 2:** open / init / clone, real-time status, stage / unstage, Monaco diff (split / inline)
 - [x] **Sprint 3:** commit (summary + description), history with commit graph and per-commit diffs, branch list / switch / create / delete
 - [x] **Remotes and history:** fetch / pull / push, undo / redo, SSH preferences, multi-repository tabs, commit search
-- [ ] **Sprint 4:** conflicts and release polish
+- [x] **Sprint 4:** conflicts and release polish
   - Merge-conflict UI built on `status().conflicted`, with ours / theirs / manual resolution
   - `merge()` / `mergeFromTo()` with abort, and conflict detection after pull
-  - Error polish and manual "Check for updates"
-- [ ] **Sprint 5:** stash and tags
-  - Stash: `stash(['push', '-u'])`, `stash(['apply'])`, `stash(['pop'])`, `stash(['drop'])` (the sidebar currently lists stashes only)
-  - Tags: `addTag()`, `addAnnotatedTag()`, `tags()`, delete, and push tags
-  - Discard changes: `checkout(['--', file])` and `clean()` for untracked files, always behind a confirmation
-- [ ] **Sprint 6:** history rewriting
-  - `rebase()` with abort / continue (interactive rebase is later)
-  - Cherry-pick and revert from the commit panel (`raw(['cherry-pick'])`, `revert()`)
-  - `reset()` soft / mixed / hard to a chosen commit
-  - Amend the last commit (`commit(msg, { '--amend': null })`)
-  - Undo / redo support for the new operations
+- [x] **Sprint 5:** stash and tags
+  - Stash: Stash / Pop in the toolbar (message, optional untracked files); Apply / Pop / Drop per stash in the sidebar; the stash panel lists its files, untracked ones included; a conflicting pop keeps the stash; Drop can be undone
+  - Tags: create lightweight or annotated tags on HEAD or any commit (commit panel → Tag), optionally pushing right away; push one or all tags; delete locally (undoable) or also on the remote
+  - Discard changes per file or all unstaged files (untracked files are deleted, staged changes kept), always behind a confirmation
+- [x] **Sprint 6:** history rewriting
+  - Rebase the current branch onto another (sidebar → Rebase), resolving conflicts in the same resolver and continuing / aborting from the banner (interactive rebase is later)
+  - Cherry-pick and revert from the commit panel (merge commits relative to their first parent)
+  - Reset soft / mixed / hard to a chosen commit (commit panel → Reset to here)
+  - Amend the last commit: message and/or staged changes (commit form checkbox, or commit panel → Amend)
+  - Every one of these can be undone / redone; dialogs warn when already-pushed commits would be rewritten
 - [ ] **Sprint 7:** deeper inspection
   - File history and blame (`log({ file })`, `raw(['blame', '--porcelain'])`)
   - Hunk- and line-level staging via `applyPatch()`

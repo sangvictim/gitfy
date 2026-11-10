@@ -4,6 +4,7 @@ import { ToolButton } from '../components/ToolButton'
 import { CreateBranchModal } from '../features/branch/CreateBranchModal'
 import { CommitSearch } from '../features/commit/CommitSearch'
 import { CloneModal } from '../features/repo/CloneModal'
+import { StashModal } from '../features/stash/StashModal'
 import { useRepoActions } from '../features/repo/useRepoActions'
 import { cx } from '../lib/format'
 import { ipc } from '../services/ipc'
@@ -13,11 +14,13 @@ import { useUiStore } from '../store/ui.store'
 import type { PullMode } from '../types/git'
 
 export function Header() {
-  const { repo, status, branches, refreshAll, busy, history, undo, redo, pull, push } = useRepoStore()
+  const { repo, status, branches, refreshAll, busy, history, undo, redo, pull, push, stashApply } = useRepoStore()
   const { openWithDialog } = useRepoActions()
-  const [modal, setModal] = useState<'clone' | 'branch' | null>(null)
+  const [modal, setModal] = useState<'clone' | 'branch' | 'stash' | null>(null)
   const [refreshing, setRefreshing] = useState(false)
 
+  const changes = (status?.staged.length ?? 0) + (status?.unstaged.length ?? 0)
+  const latestStash = branches?.stashes[0]
   const branchName = status?.detached ? 'detached HEAD' : (status?.branch ?? branches?.current ?? '—')
 
   return (
@@ -61,6 +64,21 @@ export function Header() {
           }
           onClick={push}
         />
+        <ToolButton
+          icon="stash"
+          label="Stash"
+          disabled={!!busy || changes === 0}
+          title={changes ? 'Stash your changes' : 'No changes to stash'}
+          onClick={() => setModal('stash')}
+        />
+        <ToolButton
+          icon="unstash"
+          label="Pop"
+          disabled={!!busy || !latestStash}
+          badge={branches?.stashes.length ?? 0}
+          title={latestStash ? `Pop the latest stash: ${latestStash.message}` : 'No stashes'}
+          onClick={() => latestStash && stashApply(latestStash.ref, true)}
+        />
         <ToolButton icon="branch" label="Branch" onClick={() => setModal('branch')} />
         <div className="mx-2 h-8 w-px bg-border" />
         <ToolButton
@@ -83,6 +101,7 @@ export function Header() {
 
       {modal === 'clone' && <CloneModal onClose={() => setModal(null)} />}
       {modal === 'branch' && <CreateBranchModal onClose={() => setModal(null)} />}
+      {modal === 'stash' && <StashModal onClose={() => setModal(null)} />}
     </header>
   )
 }

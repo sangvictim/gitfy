@@ -38,6 +38,67 @@ export interface RepoStatus {
   staged: FileChange[]
   unstaged: FileChange[]
   conflicted: string[]
+  /** Conflicted files with what kind of conflict each one is */
+  conflicts: ConflictFile[]
+  /** A merge / cherry-pick / revert / rebase that stopped and is waiting for the user */
+  operation: RepoOperation | null
+}
+
+export type OperationKind = 'merge' | 'cherry-pick' | 'revert' | 'rebase'
+
+export interface RepoOperation {
+  kind: OperationKind
+  /** What is being brought in: a branch name for a merge, "abc1234 subject" for a cherry-pick… */
+  incoming: string | null
+  /** Prepared commit message (MERGE_MSG) — used to complete the operation */
+  message: string | null
+}
+
+/**
+ * How the two sides changed the file. "ours" is the checked-out branch (Current),
+ * "theirs" the one being merged in (Incoming).
+ */
+export type ConflictKind =
+  | 'both-modified'
+  | 'both-added'
+  | 'both-deleted'
+  | 'deleted-by-us'
+  | 'deleted-by-them'
+  | 'added-by-us'
+  | 'added-by-them'
+
+export interface ConflictFile {
+  path: string
+  kind: ConflictKind
+}
+
+/** Everything the conflict resolver needs for one file */
+export interface ConflictDetail {
+  path: string
+  kind: ConflictKind
+  /** Working-tree file, normally containing <<<<<<< ======= >>>>>>> markers */
+  working: string
+  /** Current branch's version (stage 2), null if it doesn't exist on that side */
+  ours: string | null
+  /** Incoming version (stage 3), null if it doesn't exist on that side */
+  theirs: string | null
+  binary: boolean
+  tooLarge: boolean
+}
+
+/** 'ours' / 'theirs' take that side's whole file (deleting it if that side deleted it) */
+export type ConflictResolution = { side: 'ours' | 'theirs' } | { content: string }
+
+export interface MergeResult {
+  /** Branch that was merged into */
+  branch: string
+  /** The other branch / commit */
+  from: string
+  /** Commits brought in (0 = already up to date) */
+  commits: number
+  fastForward: boolean
+  /** Files left with conflicts — the merge is waiting to be resolved or aborted */
+  conflicts: string[]
 }
 
 export interface DiffContent {
@@ -145,6 +206,8 @@ export interface PullResult {
   branch: string
   /** Commits brought into the branch (0 = already up to date) */
   commits: number
+  /** The pull merged with conflicts; they must be resolved (or the merge aborted) */
+  conflicts?: string[]
 }
 
 export interface PushResult {
@@ -190,3 +253,40 @@ export interface AskpassRequest {
 
 /** Uniform IPC result wrapper — errors are serialised as messages, never thrown across the bridge */
 export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: string }
+
+/** What happened when a stash was applied / popped */
+export interface StashApplyResult {
+  /** Files left with conflicts (a popped stash is then kept, not dropped) */
+  conflicts: string[]
+  /** The stash was removed from the list (pop without conflicts) */
+  dropped: boolean
+}
+
+export interface TagPushResult {
+  remote: string
+}
+
+export type ResetMode = 'soft' | 'mixed' | 'hard'
+
+/** Result of a rebase / cherry-pick / revert */
+export interface RewriteResult {
+  /** Files left with conflicts: the operation is waiting to be continued or aborted */
+  conflicts: string[]
+  /** Commits added on top of where HEAD was */
+  commits: number
+}
+
+/** What rewriting history back to some commit would affect */
+export interface RewriteInfo {
+  /** Commits between that commit and HEAD (rewritten by a rebase / dropped by a reset) */
+  commits: number
+  /** How many of those the upstream already has — rewriting them means a force push later */
+  pushed: number
+  upstream: string | null
+}
+
+export interface CommitRelation {
+  isHead: boolean
+  /** The commit is part of the checked-out branch */
+  inHead: boolean
+}

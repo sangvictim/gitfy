@@ -1,4 +1,4 @@
-import type { IpcResult, OpenTabs, PullMode } from '../types/git'
+import type { ConflictResolution, IpcResult, OpenTabs, PullMode, ResetMode } from '../types/git'
 
 /** Unwrap an IpcResult, turning `{ ok: false }` into a thrown Error for ergonomic try/catch in the UI */
 async function unwrap<T>(p: Promise<IpcResult<T>>): Promise<T> {
@@ -63,6 +63,29 @@ export function gitFor(repo: string) {
     fetchAll: () => unwrap(g().fetchAll(repo)),
     pull: (mode?: PullMode) => unwrap(g().pull(repo, mode)),
     push: () => unwrap(g().push(repo)),
+
+    merge: (from: string, noFastForward?: boolean) => unwrap(g().merge(repo, from, noFastForward)),
+    conflict: (file: string) => unwrap(g().conflict(repo, file)),
+    resolveConflict: (file: string, resolution: ConflictResolution) =>
+      unwrap(g().resolveConflict(repo, file, resolution)),
+    continueOperation: (message?: string) => unwrap(g().continueOperation(repo, message)),
+    abortOperation: () => unwrap(g().abortOperation(repo)),
+
+    rewriteInfo: (base: string) => unwrap(g().rewriteInfo(repo, base)),
+    commitRelation: (hash: string) => unwrap(g().commitRelation(repo, hash)),
+    rebase: (onto: string) => unwrap(g().rebase(repo, onto)),
+    cherryPick: (hash: string) => unwrap(g().cherryPick(repo, hash)),
+    revert: (hash: string) => unwrap(g().revert(repo, hash)),
+    reset: (hash: string, mode: ResetMode) => unwrap(g().reset(repo, hash, mode)),
+    headMessage: () => unwrap(g().headMessage(repo)),
+    amend: (summary: string, description?: string) => unwrap(g().amend(repo, summary, description)),
+    stashPush: (message?: string, includeUntracked?: boolean) => unwrap(g().stashPush(repo, message, includeUntracked)),
+    stashApply: (ref: string, pop?: boolean) => unwrap(g().stashApply(repo, ref, pop)),
+    stashDrop: (ref: string) => unwrap(g().stashDrop(repo, ref)),
+    createTag: (name: string, target?: string, message?: string) => unwrap(g().createTag(repo, name, target, message)),
+    deleteTag: (name: string, fromRemote?: boolean) => unwrap(g().deleteTag(repo, name, fromRemote)),
+    pushTags: (name?: string) => unwrap(g().pushTags(repo, name)),
+    discard: (files: string[]) => unwrap(g().discard(repo, files)),
 
     history: () => unwrap(g().history(repo)),
     undo: () => unwrap(g().undo(repo)),

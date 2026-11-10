@@ -5,7 +5,7 @@ import { askpass } from './services/askpass.service'
 import { history } from './services/history.service'
 import { repoService } from './services/repo.service'
 import { settingsService } from './services/settings.service'
-import type { AskpassRequest, IpcResult, OpenTabs, PullMode } from '../src/types/git'
+import type { AskpassRequest, ConflictResolution, IpcResult, OpenTabs, PullMode, ResetMode } from '../src/types/git'
 
 // Layout after build:
 // ├─ dist/            renderer (index.html)
@@ -235,6 +235,53 @@ function registerIpc() {
   handle('git:fetchAll', (repo: string) => gitService.fetchAll(repo))
   handle('git:pull', (repo: string, mode?: PullMode) => gitService.pull(repo, mode === 'ff-only' ? 'ff-only' : 'ff'))
   handle('git:push', (repo: string) => gitService.push(repo))
+
+  // Merge & conflicts
+  handle('git:merge', (repo: string, from: string, noFastForward?: boolean) =>
+    gitService.merge(repo, from, noFastForward === true),
+  )
+  handle('git:conflict', (repo: string, file: string) => gitService.getConflict(repo, file))
+  handle('git:resolveConflict', (repo: string, file: string, resolution: ConflictResolution) =>
+    gitService.resolveConflict(repo, file, resolution),
+  )
+  handle('git:continueOperation', (repo: string, message?: string) =>
+    gitService.continueOperation(repo, typeof message === 'string' ? message : undefined),
+  )
+  handle('git:abortOperation', (repo: string) => gitService.abortOperation(repo))
+
+  // History rewriting
+  handle('git:rewriteInfo', (repo: string, base: string) => gitService.rewriteInfo(repo, base))
+  handle('git:commitRelation', (repo: string, hash: string) => gitService.commitRelation(repo, hash))
+  handle('git:rebase', (repo: string, onto: string) => gitService.rebase(repo, onto))
+  handle('git:cherryPick', (repo: string, hash: string) => gitService.cherryPick(repo, hash))
+  handle('git:revert', (repo: string, hash: string) => gitService.revert(repo, hash))
+  handle('git:reset', (repo: string, hash: string, mode: ResetMode) => gitService.reset(repo, hash, mode))
+  handle('git:headMessage', (repo: string) => gitService.headMessage(repo))
+  handle('git:amend', (repo: string, summary: string, description?: string) =>
+    gitService.amend(repo, summary, typeof description === 'string' ? description : undefined),
+  )
+
+  // Stash, tags, discard
+  handle('git:stashPush', (repo: string, message?: string, includeUntracked?: boolean) =>
+    gitService.stashPush(repo, typeof message === 'string' ? message : undefined, includeUntracked !== false),
+  )
+  handle('git:stashApply', (repo: string, ref: string, pop?: boolean) => gitService.stashApply(repo, ref, pop === true))
+  handle('git:stashDrop', (repo: string, ref: string) => gitService.stashDrop(repo, ref))
+  handle('git:createTag', (repo: string, name: string, target?: string, message?: string) =>
+    gitService.createTag(
+      repo,
+      name,
+      typeof target === 'string' ? target : undefined,
+      typeof message === 'string' ? message : undefined,
+    ),
+  )
+  handle('git:deleteTag', (repo: string, name: string, fromRemote?: boolean) =>
+    gitService.deleteTag(repo, name, fromRemote === true),
+  )
+  handle('git:pushTags', (repo: string, name?: string) =>
+    gitService.pushTags(repo, typeof name === 'string' ? name : undefined),
+  )
+  handle('git:discard', (repo: string, files: string[]) => gitService.discard(repo, files))
 
   // Undo / redo
   handle('git:history', (repo: string) => gitService.getHistory(repo))

@@ -8,16 +8,29 @@ import type {
   CommitFile,
   CheckoutResult,
   CommitRef,
+  ConflictDetail,
+  ConflictFile,
+  ConflictKind,
+  ConflictResolution,
   DiffContent,
   FileChange,
   FileChangeType,
   HistoryState,
+  MergeResult,
+  OperationKind,
   PullMode,
   PullResult,
   PushResult,
   RemoteInfo,
+  RepoOperation,
   RepoStatus,
+  CommitRelation,
+  ResetMode,
+  RewriteInfo,
+  RewriteResult,
+  StashApplyResult,
   StashRef,
+  TagPushResult,
   TagRef,
 } from '../../src/types/git'
 import { describe, history, StaleOperationError, type Op } from './history.service'
@@ -54,8 +67,8 @@ function assertPaths(repo: string, files: unknown): string[] {
 
 async function hasHead(g: SimpleGit): Promise<boolean> {
   try {
-    await g.raw(['rev-parse', '--verify', '--quiet', 'HEAD'])
-    return true
+    // --quiet fails with exit code 1 and no output, which simple-git resolves with '' instead of throwing
+    return !!(await g.raw(['rev-parse', '--verify', '--quiet', 'HEAD'])).trim()
   } catch {
     return false
   }
@@ -117,15 +130,30 @@ function mapCode(code: string): FileChangeType {
   }
 }
 
-function toRepoStatus(s: StatusResult): RepoStatus {
+/** Unmerged index/worktree status pairs (git status --porcelain) */
+const CONFLICT_CODES: Record<string, ConflictKind> = {
+  UU: 'both-modified',
+  AA: 'both-added',
+  DD: 'both-deleted',
+  DU: 'deleted-by-us',
+  UD: 'deleted-by-them',
+  AU: 'added-by-us',
+  UA: 'added-by-them',
+}
+
+function toRepoStatus(s: StatusResult, operation: RepoOperation | null): RepoStatus {
   const staged: FileChange[] = []
   const unstaged: FileChange[] = []
+  const conflicts: ConflictFile[] = []
   const conflicted = new Set(s.conflicted)
 
   for (const f of s.files) {
     const x = f.index
     const y = f.working_dir
-    if (conflicted.has(f.path)) {
+    const kind = CONFLICT_CODES[`${x}${y}`]
+    if (kind || conflicted.has(f.path)) {
+      conflicted.add(f.path)
+      conflicts.push({ path: f.path, kind: kind ?? 'both-modified' })
       unstaged.push({ path: f.path, type: 'conflicted' })
       continue
     }
@@ -141,7 +169,7 @@ function toRepoStatus(s: StatusResult): RepoStatus {
     }
   }
 
-  const byPath = (a: FileChange, b: FileChange) => a.path.localeCompare(b.path)
+  const byPath = (a: { path: string }, b: { path: string }) => a.path.localeCompare(b.path)
   return {
     branch: s.current,
     tracking: s.tracking,
@@ -150,12 +178,15 @@ function toRepoStatus(s: StatusResult): RepoStatus {
     detached: s.detached,
     staged: staged.sort(byPath),
     unstaged: unstaged.sort(byPath),
-    conflicted: s.conflicted,
+    conflicted: [...conflicted].sort(),
+    conflicts: conflicts.sort(byPath),
+    operation,
   }
 }
 
 export async function getStatus(repo: string): Promise<RepoStatus> {
-  return toRepoStatus(await git(repo).status(['--untracked-files=all']))
+  const [s, operation] = await Promise.all([git(repo).status(['--untracked-files=all']), getOperation(repo)])
+  return toRepoStatus(s, operation)
 }
 
 export async function stage(repo: string, files: string[]) {
@@ -403,19 +434,32 @@ async function firstParent(repo: string, hash: string): Promise<string | null> {
   return parts[1] ?? null
 }
 
+/** A stash commit made with --include-untracked keeps the untracked files in its third parent */
+async function stashUntrackedParent(repo: string, hash: string): Promise<string | null> {
+  const stashes = await getStashes(repo)
+  if (!stashes.some((st) => st.commit.startsWith(hash) || hash.startsWith(st.commit))) return null
+  return refHash(repo, `${hash}^3`)
+}
+
 export async function getCommitFiles(repo: string, hash: string): Promise<CommitFile[]> {
   assertHash(hash)
   const parent = await firstParent(repo, hash)
   const out = parent
     ? await git(repo).raw(['diff', '--name-status', '-M', parent, hash])
     : await git(repo).raw(['diff-tree', '--root', '--no-commit-id', '-r', '-M', '--name-status', hash])
-  return out
+  const files: CommitFile[] = out
     .split('\n')
     .filter(Boolean)
     .map((line) => {
       const [status, a, b] = line.split('\t')
       return b ? { status: status[0], from: a, path: b } : { status: status[0], path: a }
     })
+  const untracked = await stashUntrackedParent(repo, hash)
+  if (untracked) {
+    const names = (await git(repo).raw(['ls-tree', '-r', '--name-only', untracked])).split('\n').filter(Boolean)
+    files.push(...names.map((path) => ({ status: 'A', path })))
+  }
+  return files
 }
 
 export async function getCommitFileDiff(repo: string, hash: string, file: string, from?: string): Promise<DiffContent> {
@@ -424,7 +468,12 @@ export async function getCommitFileDiff(repo: string, hash: string, file: string
   if (from) safeJoin(repo, from)
   const parent = await firstParent(repo, hash)
   const original = parent ? await readObject(repo, parent, from ?? file) : EMPTY
-  const modified = await readObject(repo, hash, file)
+  let modified = await readObject(repo, hash, file)
+  if (modified === EMPTY) {
+    // Untracked file saved in a stash
+    const untracked = await stashUntrackedParent(repo, hash)
+    if (untracked) modified = await readObject(repo, untracked, file)
+  }
   return makeDiff(file, original, modified)
 }
 
@@ -671,9 +720,13 @@ export async function pull(repo: string, mode: PullMode = 'ff'): Promise<PullRes
   const branch = await currentBranch(repo)
   if (!branch) throw new Error('Cannot pull with a detached HEAD — switch to a branch first')
   const before = await headHash(repo)
+  if (await getOperation(repo)) throw new Error('Finish or abort the merge in progress before pulling')
   try {
     // --no-edit: never wait for an editor to write a merge commit message
     await netGit(repo).raw(['pull', '--no-edit', mode === 'ff-only' ? '--ff-only' : '--no-rebase'])
+    // Conflicts are reported on stdout, so the command may "succeed"
+    const conflicts = await stoppedOnConflicts(repo)
+    if (conflicts) return { branch, commits: 0, conflicts }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (/no tracking information/i.test(msg)) {
@@ -682,8 +735,10 @@ export async function pull(repo: string, mode: PullMode = 'ff'): Promise<PullRes
     if (/Not possible to fast-forward|diverging branches/i.test(msg)) {
       throw new Error(`'${branch}' and its upstream have diverged, so a fast-forward-only pull isn't possible. Use "Pull (fast-forward if possible)" to merge.`)
     }
-    if (/CONFLICT|Automatic merge failed/i.test(msg)) {
-      throw new Error(`Pull stopped with merge conflicts. Resolve the conflicted files, stage them and commit to finish the merge.\n\n${msg}`)
+    const conflicts = await stoppedOnConflicts(repo)
+    if (conflicts) return { branch, commits: 0, conflicts }
+    if (/would be overwritten by merge|commit your changes or stash them/i.test(msg)) {
+      throw new Error(`Your uncommitted changes would be overwritten by the pull. Commit or stash them first.\n\n${msg}`)
     }
     throw friendlyRemoteError(err, 'pull')
   }
@@ -735,6 +790,652 @@ export async function push(repo: string): Promise<PushResult> {
   // Pushed commits are shared now — undoing local history past this point would diverge from the remote
   history.clear(repo)
   return { branch, remote, setUpstream }
+}
+
+// ---------------------------------------------------------------------------
+// Merge & conflicts
+// ---------------------------------------------------------------------------
+
+/** Absolute .git directory of each open repository (per worktree) */
+const gitDirs = new Map<string, string>()
+
+async function gitDir(repo: string): Promise<string> {
+  const root = repoService.require(repo).path
+  let dir = gitDirs.get(root)
+  if (!dir) {
+    dir = path.resolve(root, (await git(repo).raw(['rev-parse', '--absolute-git-dir'])).trim())
+    gitDirs.set(root, dir)
+  }
+  return dir
+}
+
+async function readGitFile(repo: string, name: string): Promise<string | null> {
+  try {
+    return await fs.readFile(path.join(await gitDir(repo), name), 'utf8')
+  } catch {
+    return null
+  }
+}
+
+async function gitFileExists(repo: string, name: string): Promise<boolean> {
+  try {
+    await fs.access(path.join(await gitDir(repo), name))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Commit message git prepared for the operation, without its "# ..." comment lines */
+function cleanMessage(raw: string | null): string | null {
+  if (!raw) return null
+  const text = raw
+    .split('\n')
+    .filter((l) => !l.startsWith('#'))
+    .join('\n')
+    .trim()
+  return text || null
+}
+
+/** "Merge branch 'feature' into main" -> "feature"; "Merge branch 'main' of <origin's url>" (a pull) -> "origin/main" */
+async function incomingFromMessage(repo: string, msg: string | null): Promise<string | null> {
+  const m = msg && /^Merge (?:remote-tracking )?branch(?:es)? '([^']+)'(?: of (\S+))?/.exec(msg)
+  if (!m) return null
+  if (!m[2]) return m[1]
+  const remote = (await getRemotes(repo)).find((r) => r.url === m[2])
+  return remote ? `${remote.name}/${m[1]}` : `${m[1]} (remote)`
+}
+
+async function describeCommit(repo: string, ref: string): Promise<string | null> {
+  try {
+    return (await git(repo).raw(['log', '-1', '--format=%h %s', ref])).trim() || null
+  } catch {
+    return null
+  }
+}
+
+/** A merge / cherry-pick / revert / rebase that stopped half-way (e.g. on conflicts) */
+async function getOperation(repo: string): Promise<RepoOperation | null> {
+  try {
+    if (await gitFileExists(repo, 'MERGE_HEAD')) {
+      const message = cleanMessage(await readGitFile(repo, 'MERGE_MSG'))
+      let incoming = await incomingFromMessage(repo, message)
+      if (!incoming) {
+        const hash = (await readGitFile(repo, 'MERGE_HEAD'))?.trim().split('\n')[0]
+        if (hash) incoming = (await describeCommit(repo, hash))?.split(' ')[0] ?? hash.slice(0, 7)
+      }
+      return { kind: 'merge', incoming, message }
+    }
+    if (await gitFileExists(repo, 'CHERRY_PICK_HEAD')) {
+      return {
+        kind: 'cherry-pick',
+        incoming: await describeCommit(repo, 'CHERRY_PICK_HEAD'),
+        message: cleanMessage(await readGitFile(repo, 'MERGE_MSG')),
+      }
+    }
+    if (await gitFileExists(repo, 'REVERT_HEAD')) {
+      return {
+        kind: 'revert',
+        incoming: await describeCommit(repo, 'REVERT_HEAD'),
+        message: cleanMessage(await readGitFile(repo, 'MERGE_MSG')),
+      }
+    }
+    for (const dir of ['rebase-merge', 'rebase-apply']) {
+      if (await gitFileExists(repo, dir)) {
+        const onto = (await readGitFile(repo, `${dir}/onto`))?.trim()
+        return { kind: 'rebase', incoming: onto ? await describeCommit(repo, onto) : null, message: null }
+      }
+    }
+  } catch {
+    /* repository closed meanwhile */
+  }
+  return null
+}
+
+const OPERATION_LABEL: Record<OperationKind, string> = {
+  merge: 'merge',
+  'cherry-pick': 'cherry-pick',
+  revert: 'revert',
+  rebase: 'rebase',
+}
+
+async function requireOperation(repo: string): Promise<RepoOperation> {
+  const op = await getOperation(repo)
+  if (!op) throw new Error('There is no merge in progress')
+  return op
+}
+
+/** Read one stage of an unmerged file (1 = base, 2 = ours, 3 = theirs); null if that side has no file */
+async function readStage(repo: string, stage: 1 | 2 | 3, file: string): Promise<Blob | null> {
+  try {
+    return toBlob(await git(repo).showBuffer([`:${stage}:${file}`]))
+  } catch {
+    return null
+  }
+}
+
+async function conflictKindOf(repo: string, file: string): Promise<ConflictKind> {
+  const status = await getStatus(repo)
+  const c = status.conflicts.find((f) => f.path === file)
+  if (!c) throw new Error(`'${file}' has no conflict to resolve (already resolved?)`)
+  return c.kind
+}
+
+export async function getConflict(repo: string, file: string): Promise<ConflictDetail> {
+  safeJoin(repo, file)
+  const kind = await conflictKindOf(repo, file)
+  const [ours, theirs] = await Promise.all([readStage(repo, 2, file), readStage(repo, 3, file)])
+  let working: Blob = EMPTY
+  try {
+    working = toBlob(await fs.readFile(safeJoin(repo, file)))
+  } catch {
+    /* deleted in the working tree */
+  }
+  return {
+    path: file,
+    kind,
+    working: working.text,
+    ours: ours?.text ?? null,
+    theirs: theirs?.text ?? null,
+    binary: !!(working.binary || ours?.binary || theirs?.binary),
+    tooLarge: !!(working.tooLarge || ours?.tooLarge || theirs?.tooLarge),
+  }
+}
+
+/** Resolve one conflicted file and mark it resolved (stage it) */
+export async function resolveConflict(repo: string, file: string, resolution: ConflictResolution) {
+  const abs = safeJoin(repo, file)
+  await conflictKindOf(repo, file)
+  const g = git(repo)
+
+  if (resolution && 'content' in resolution && typeof resolution.content === 'string') {
+    await fs.writeFile(abs, resolution.content, 'utf8')
+    await g.raw(['add', '--', file])
+    return
+  }
+
+  const side = resolution && 'side' in resolution ? resolution.side : null
+  if (side !== 'ours' && side !== 'theirs') throw new Error('Unknown conflict resolution')
+  const exists = (await readStage(repo, side === 'ours' ? 2 : 3, file)) !== null
+  if (exists) {
+    await g.raw(['checkout', side === 'ours' ? '--ours' : '--theirs', '--', file])
+    await g.raw(['add', '--', file])
+  } else {
+    // That side deleted the file: resolving to it means deleting it
+    await g.raw(['rm', '-q', '-f', '--', file])
+  }
+}
+
+function assertRefName(ref: unknown): string {
+  if (typeof ref !== 'string' || !ref.trim() || ref.startsWith('-') || /[\s\x00-\x1f]/.test(ref)) {
+    throw new Error('Invalid branch name')
+  }
+  return ref.trim()
+}
+
+/** Merge `from` (a local or remote branch) into the checked-out branch */
+export async function merge(repo: string, from: string, noFastForward = false): Promise<MergeResult> {
+  const name = assertRefName(from)
+  const branch = await currentBranch(repo)
+  if (!branch) throw new Error('Cannot merge with a detached HEAD — switch to a branch first')
+  if (name === branch) throw new Error(`Can't merge '${name}' into itself`)
+  const op = await getOperation(repo)
+  if (op) throw new Error(`A ${OPERATION_LABEL[op.kind]} is already in progress — finish or abort it first`)
+  const target = await refHash(repo, name)
+  if (!target) throw new Error(`Branch '${name}' not found`)
+
+  const before = await headHash(repo)
+  const g = git(repo)
+  let failure: unknown = null
+  try {
+    await g.raw(['merge', '--no-edit', noFastForward ? '--no-ff' : '--ff', name])
+  } catch (err) {
+    failure = err
+  }
+  // git reports conflicts on stdout, so simple-git doesn't always treat them as a failure
+  const conflicts = await stoppedOnConflicts(repo)
+  if (conflicts) return { branch, from: name, commits: 0, fastForward: false, conflicts }
+  if (failure) throw friendlyMergeError(failure instanceof Error ? failure.message : String(failure))
+  const after = await headHash(repo)
+  let commits = 0
+  if (after && after !== before) {
+    commits = before ? Number((await g.raw(['rev-list', '--count', `${before}..${after}`])).trim()) : 0
+    if (before) history.record(repo, { kind: 'merge', branch, from: name, before, after })
+  }
+  return { branch, from: name, commits, fastForward: after === target && after !== before, conflicts: [] }
+}
+
+/** Conflicted files if the last command left a merge waiting on conflicts, else null */
+async function stoppedOnConflicts(repo: string): Promise<string[] | null> {
+  const status = await getStatus(repo)
+  return status.operation && status.conflicted.length > 0 ? status.conflicted : null
+}
+
+function friendlyMergeError(msg: string): Error {
+  if (/would be overwritten by merge|commit your changes or stash them/i.test(msg)) {
+    return new Error(`Your uncommitted changes would be overwritten by this merge. Commit or stash them first.\n\n${msg}`)
+  }
+  if (/unrelated histories/i.test(msg)) {
+    return new Error(`These branches have no common history, so Gitfy won't merge them.\n\n${msg}`)
+  }
+  return new Error(msg)
+}
+
+/** Finish the operation once every conflict is resolved: commit the merge / continue the cherry-pick… */
+export async function continueOperation(repo: string, message?: string): Promise<RepoOperation | null> {
+  const op = await requireOperation(repo)
+  const status = await getStatus(repo)
+  if (status.conflicted.length > 0) {
+    throw new Error(`Resolve the remaining ${status.conflicted.length} conflicted file${status.conflicted.length === 1 ? '' : 's'} first`)
+  }
+  const g = git(repo)
+  if (op.kind === 'merge') {
+    const branch = await currentBranch(repo)
+    const before = await headHash(repo)
+    // op.message is MERGE_MSG without git's "# Conflicts:" comment lines (`--no-edit` would keep them)
+    const text = (typeof message === 'string' ? message.trim() : '') || op.message || `Merge ${op.incoming ?? 'branch'}`
+    await g.raw(['commit', '-q', '-m', text])
+    const after = await headHash(repo)
+    if (branch && before && after && after !== before) {
+      history.record(repo, { kind: 'merge', branch, from: op.incoming ?? 'branch', before, after })
+    }
+  } else {
+    // No terminal to open an editor in: `core.editor=true` keeps the prepared message as is.
+    // (simple-git blocks editor settings unless allowed; this one is fixed, never user input)
+    await simpleGit({ baseDir: repoService.require(repo).path, unsafe: { allowUnsafeEditor: true } }).raw([
+      '-c',
+      'core.editor=true',
+      op.kind,
+      '--continue',
+    ])
+  }
+  // A rebase can stop again on the next commit
+  const still = await getOperation(repo)
+  const pending = pendingMoves.get(pendingKey(repo))
+  if (!still && pending) {
+    pendingMoves.delete(pendingKey(repo))
+    const after = await headHash(repo)
+    if (after && after !== pending.before) {
+      history.record(repo, { kind: 'headMove', what: pending.what, branch: pending.branch, before: pending.before, after, mode: 'keep' })
+    }
+  }
+  return still
+}
+
+/** Abort the operation and go back to how things were before it started */
+export async function abortOperation(repo: string): Promise<OperationKind> {
+  const op = await requireOperation(repo)
+  await git(repo).raw([op.kind, '--abort'])
+  pendingMoves.delete(pendingKey(repo))
+  return op.kind
+}
+
+// ---------------------------------------------------------------------------
+// History rewriting: rebase, cherry-pick, revert, reset, amend
+// ---------------------------------------------------------------------------
+
+/**
+ * A rebase / cherry-pick / revert started from Gitfy that stopped on conflicts: remembered so that,
+ * once it is continued to the end, it can be recorded for undo like one that finished right away.
+ */
+const pendingMoves = new Map<string, { what: string; branch: string | null; before: string }>()
+
+function pendingKey(repo: string) {
+  return repoService.require(repo).path
+}
+
+async function isAncestor(repo: string, ancestor: string, of: string): Promise<boolean> {
+  // `merge-base --is-ancestor` only answers through its exit code, which simple-git doesn't always
+  // surface; comparing the merge base is unambiguous
+  const a = await refHash(repo, ancestor)
+  if (!a) return false
+  try {
+    return (await git(repo).raw(['merge-base', a, of])).trim() === a
+  } catch {
+    return false // no common history
+  }
+}
+
+async function upstreamOf(repo: string): Promise<string | null> {
+  try {
+    return (await git(repo).raw(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])).trim() || null
+  } catch {
+    return null
+  }
+}
+
+async function countRevs(repo: string, args: string[]): Promise<number> {
+  return Number((await git(repo).raw(['rev-list', '--count', ...args])).trim()) || 0
+}
+
+/** Refuse to start while something else is half-done or files are conflicted */
+async function assertCleanStart(repo: string, what: string) {
+  const op = await getOperation(repo)
+  if (op) throw new Error(`Finish or abort the ${OPERATION_LABEL[op.kind]} in progress before starting a ${what}`)
+  if ((await getStatus(repo)).conflicted.length) throw new Error(`Resolve the conflicted files before starting a ${what}`)
+}
+
+function friendlyRewriteError(msg: string, what: string): Error {
+  if (/would be overwritten|commit your changes or stash them|You have unstaged changes|Your index contains uncommitted changes|cannot (rebase|cherry-pick|revert)/i.test(msg)) {
+    return new Error(`Commit or stash your local changes before the ${what}.\n\n${msg}`)
+  }
+  return new Error(msg)
+}
+
+/**
+ * Run a command that moves HEAD (rebase / cherry-pick / revert). If it stops on conflicts, the
+ * operation is left for the user to resolve; otherwise it is recorded for undo.
+ */
+async function runMove(repo: string, what: string, args: string[]): Promise<RewriteResult> {
+  const branch = await currentBranch(repo)
+  const before = await headHash(repo)
+  if (!before) throw new Error(`Make a first commit before a ${what.split(' ')[0]}`)
+  let failure: unknown = null
+  try {
+    await git(repo).raw(args)
+  } catch (err) {
+    failure = err
+  }
+  const conflicts = await stoppedOnConflicts(repo)
+  if (conflicts) {
+    pendingMoves.set(pendingKey(repo), { what, branch, before })
+    return { conflicts, commits: 0 }
+  }
+  if (failure) {
+    // A rebase / cherry-pick that stopped for another reason (e.g. an empty commit) must not be left half-done
+    const op = await getOperation(repo)
+    if (op) await git(repo).raw([op.kind, '--abort']).catch(() => {})
+    throw friendlyRewriteError(failure instanceof Error ? failure.message : String(failure), what.split(' ')[0])
+  }
+  const after = await headHash(repo)
+  if (after && after !== before) {
+    history.record(repo, { kind: 'headMove', what, branch, before, after, mode: 'keep' })
+  }
+  return { conflicts: [], commits: after && after !== before ? await countRevs(repo, [`${before}..${after}`]).catch(() => 0) : 0 }
+}
+
+/** What rewriting history from `base` to HEAD would affect: commits rewritten / dropped, and how many are pushed */
+export async function rewriteInfo(repo: string, baseRef: string): Promise<RewriteInfo> {
+  // A commit hash (reset) or a branch name (rebase onto it)
+  const base = await refHash(repo, assertRefName(baseRef))
+  if (!base) throw new Error(`'${baseRef}' not found`)
+  const upstream = await upstreamOf(repo)
+  const commits = await countRevs(repo, [`${base}..HEAD`])
+  // Commits in base..HEAD that the upstream already has = all of them minus those only here
+  const pushed = upstream ? commits - (await countRevs(repo, ['HEAD', `^${base}`, `^${upstream}`])) : 0
+  return { commits, pushed, upstream }
+}
+
+/** Relationship between a commit and HEAD (decides which actions the commit panel offers) */
+export async function commitRelation(repo: string, hash: string): Promise<CommitRelation> {
+  assertHash(hash)
+  const head = await headHash(repo)
+  if (!head) return { isHead: false, inHead: false }
+  const full = await refHash(repo, hash)
+  return { isHead: full === head, inHead: full ? await isAncestor(repo, full, head) : false }
+}
+
+/** Rebase the checked-out branch onto `onto` (a local or remote branch) */
+export async function rebase(repo: string, onto: string): Promise<RewriteResult> {
+  const name = assertRefName(onto)
+  const branch = await currentBranch(repo)
+  if (!branch) throw new Error('Switch to a branch before rebasing')
+  if (name === branch) throw new Error(`Can't rebase '${branch}' onto itself`)
+  await assertCleanStart(repo, 'rebase')
+  const target = await refHash(repo, name)
+  if (!target) throw new Error(`Branch '${name}' not found`)
+  if (await isAncestor(repo, target, 'HEAD')) throw new Error(`'${branch}' already contains everything in '${name}' — nothing to rebase`)
+  return runMove(repo, `rebase of ${branch} onto ${name}`, ['rebase', name])
+}
+
+async function parentCount(repo: string, hash: string): Promise<number> {
+  return (await git(repo).raw(['rev-list', '--parents', '-n', '1', hash])).trim().split(' ').length - 1
+}
+
+/** Apply a commit from elsewhere on top of HEAD */
+export async function cherryPick(repo: string, hash: string): Promise<RewriteResult> {
+  assertHash(hash)
+  await assertCleanStart(repo, 'cherry-pick')
+  const full = await refHash(repo, hash)
+  if (!full) throw new Error(`Commit ${hash} not found`)
+  if (await isAncestor(repo, full, 'HEAD')) throw new Error('That commit is already part of the current branch')
+  const merge = (await parentCount(repo, full)) > 1
+  // A merge commit is picked relative to its first parent (the branch it was merged into)
+  return runMove(repo, `cherry-pick of ${full.slice(0, 7)}`, ['cherry-pick', ...(merge ? ['-m', '1'] : []), full])
+}
+
+/** Add a commit that undoes `hash` */
+export async function revert(repo: string, hash: string): Promise<RewriteResult> {
+  assertHash(hash)
+  await assertCleanStart(repo, 'revert')
+  const full = await refHash(repo, hash)
+  if (!full) throw new Error(`Commit ${hash} not found`)
+  if (!(await isAncestor(repo, full, 'HEAD'))) throw new Error('Only commits that are part of the current branch can be reverted')
+  const merge = (await parentCount(repo, full)) > 1
+  return runMove(repo, `revert of ${full.slice(0, 7)}`, ['revert', '--no-edit', ...(merge ? ['-m', '1'] : []), full])
+}
+
+/** Move the current branch (or detached HEAD) to `hash` */
+export async function reset(repo: string, hash: string, mode: ResetMode): Promise<void> {
+  assertHash(hash)
+  if (mode !== 'soft' && mode !== 'mixed' && mode !== 'hard') throw new Error('Unknown reset mode')
+  await assertCleanStart(repo, 'reset')
+  const target = await refHash(repo, hash)
+  if (!target) throw new Error(`Commit ${hash} not found`)
+  const before = await headHash(repo)
+  if (!before) throw new Error('Nothing to reset yet — make a first commit')
+  if (target === before && mode !== 'hard') throw new Error('The branch is already at that commit')
+  const branch = await currentBranch(repo)
+  await git(repo).raw(['reset', '-q', `--${mode}`, target])
+  if (target !== before) {
+    history.record(repo, {
+      kind: 'headMove',
+      what: `${mode} reset of ${branch ?? 'HEAD'} to ${target.slice(0, 7)}`,
+      branch,
+      before,
+      after: target,
+      // A hard reset already threw the local changes away; going back must not clobber newer ones
+      mode: mode === 'hard' ? 'keep' : mode,
+    })
+  }
+}
+
+/** The last commit's message, to prefill "amend" */
+export async function headMessage(repo: string): Promise<string> {
+  if (!(await hasHead(git(repo)))) return ''
+  return (await git(repo).raw(['log', '-1', '--format=%B'])).trim()
+}
+
+/** Replace the last commit with one containing its changes plus the staged ones, and the new message */
+export async function amend(repo: string, summary: string, description?: string): Promise<string> {
+  const subject = (summary ?? '').trim()
+  if (!subject) throw new Error('Commit summary is required')
+  const before = await headHash(repo)
+  if (!before) throw new Error('There is no commit to amend yet')
+  await assertCleanStart(repo, 'amend')
+  const body = (description ?? '').trim()
+  const branch = await currentBranch(repo)
+  await git(repo).raw(['commit', '-q', '--amend', '--allow-empty', '-m', body ? `${subject}\n\n${body}` : subject])
+  const after = (await headHash(repo))!
+  // Undo puts the original commit back and leaves what the amend added staged
+  history.record(repo, { kind: 'headMove', what: `amend of "${subject.length > 40 ? subject.slice(0, 40) + '…' : subject}"`, branch, before, after, mode: 'soft' })
+  return after
+}
+
+// ---------------------------------------------------------------------------
+// Stash
+// ---------------------------------------------------------------------------
+
+function assertStashRef(ref: unknown): string {
+  if (typeof ref !== 'string' || !/^stash@\{\d+\}$/.test(ref)) throw new Error('Invalid stash reference')
+  return ref
+}
+
+/** Stash the working copy (staged, unstaged and — by default — untracked files) */
+export async function stashPush(repo: string, message?: string, includeUntracked = true) {
+  const status = await getStatus(repo)
+  if (status.conflicted.length) throw new Error('Resolve the conflicted files before stashing')
+  const untracked = status.unstaged.some((f) => f.type === 'untracked')
+  const tracked = status.staged.length > 0 || status.unstaged.some((f) => f.type !== 'untracked')
+  if (!tracked && !(includeUntracked && untracked)) {
+    throw new Error(untracked ? 'Only untracked files changed — tick "Include untracked files" to stash them' : 'There are no changes to stash')
+  }
+  if (!(await hasHead(git(repo)))) throw new Error('Make a first commit before stashing')
+  const msg = typeof message === 'string' ? message.trim() : ''
+  await git(repo).raw(['stash', 'push', ...(includeUntracked ? ['--include-untracked'] : []), ...(msg ? ['-m', msg] : [])])
+}
+
+async function stashInfo(repo: string, ref: string) {
+  const stash = (await getStashes(repo)).find((s) => s.ref === ref)
+  if (!stash) throw new Error(`${ref} no longer exists`)
+  return stash
+}
+
+/** Apply a stash; with `pop`, also drop it — unless it left conflicts (git keeps it then) */
+export async function stashApply(repo: string, ref: string, pop = false): Promise<StashApplyResult> {
+  assertStashRef(ref)
+  const stash = await stashInfo(repo, ref)
+  const op = await getOperation(repo)
+  if (op) throw new Error(`Finish or abort the ${OPERATION_LABEL[op.kind]} in progress first`)
+  let failure: unknown = null
+  try {
+    // --index would be needed to restore what was staged, but it refuses whenever that doesn't apply
+    // cleanly; plain apply is what users expect from a GUI
+    await git(repo).raw(['stash', pop ? 'pop' : 'apply', ref])
+  } catch (err) {
+    failure = err
+  }
+  const conflicts = (await getStatus(repo)).conflicted
+  if (conflicts.length) return { conflicts, dropped: false }
+  if (failure) {
+    const msg = failure instanceof Error ? failure.message : String(failure)
+    if (/already exists, no checkout|would be overwritten/i.test(msg)) {
+      throw new Error(`Some files in the stash would overwrite your current changes. Commit or stash those first.\n\n${msg}`)
+    }
+    throw failure
+  }
+  if (pop) history.record(repo, { kind: 'dropStash', hash: stash.commit, message: stash.message })
+  return { conflicts: [], dropped: pop }
+}
+
+export async function stashDrop(repo: string, ref: string) {
+  assertStashRef(ref)
+  const stash = await stashInfo(repo, ref)
+  await git(repo).raw(['stash', 'drop', '-q', ref])
+  history.record(repo, { kind: 'dropStash', hash: stash.commit, message: stash.message })
+}
+
+// ---------------------------------------------------------------------------
+// Tags
+// ---------------------------------------------------------------------------
+
+async function assertTagName(repo: string, name: unknown): Promise<string> {
+  const n = typeof name === 'string' ? name.trim() : ''
+  if (!n) throw new Error('Tag name is required')
+  if (n.startsWith('-')) throw new Error(`"${n}" is not a valid tag name`)
+  try {
+    await git(repo).raw(['check-ref-format', `refs/tags/${n}`])
+  } catch {
+    throw new Error(`"${n}" is not a valid tag name`)
+  }
+  return n
+}
+
+/** Create a tag on `target` (default HEAD); with a message it is an annotated tag */
+export async function createTag(repo: string, name: string, target?: string, message?: string) {
+  const n = await assertTagName(repo, name)
+  if (target !== undefined) assertHash(target)
+  if (await refHash(repo, `refs/tags/${n}`)) throw new Error(`A tag named '${n}' already exists`)
+  const commit = await refHash(repo, target ?? 'HEAD')
+  if (!commit) throw new Error(target ? `Commit ${target} not found` : 'Make a first commit before tagging')
+  const msg = typeof message === 'string' ? message.trim() : ''
+  await git(repo).raw(msg ? ['tag', '-a', '-m', msg, '--', n, commit] : ['tag', '--', n, commit])
+}
+
+/** Remote tags are pushed to / deleted from: the current branch's upstream remote, else origin, else the first */
+async function defaultRemote(repo: string): Promise<string> {
+  const g = git(repo)
+  const branch = await currentBranch(repo)
+  if (branch) {
+    try {
+      const r = (await g.raw(['config', '--get', `branch.${branch}.remote`])).trim()
+      if (r && r !== '.') return r
+    } catch {
+      /* no upstream */
+    }
+  }
+  const remotes = (await getRemotes(repo)).map((r) => r.name)
+  if (!remotes.length) throw new Error('This repository has no remote')
+  return remotes.includes('origin') ? 'origin' : remotes[0]
+}
+
+export async function deleteTag(repo: string, name: string, fromRemote = false): Promise<TagPushResult | null> {
+  const n = await assertTagName(repo, name)
+  let object = ''
+  try {
+    object = (await git(repo).raw(['rev-parse', '--verify', '--quiet', `refs/tags/${n}`])).trim()
+  } catch {
+    /* handled below */
+  }
+  if (!object) throw new Error(`Tag '${n}' not found`)
+  let remote: string | null = null
+  if (fromRemote) {
+    remote = await defaultRemote(repo)
+    try {
+      await netGit(repo).raw(['push', remote, '--delete', `refs/tags/${n}`])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      // Never pushed: nothing to delete there, carry on with the local tag
+      if (!/remote ref does not exist|unable to delete .*: remote ref does not exist/i.test(msg)) throw friendlyRemoteError(err, 'push')
+    }
+  }
+  await git(repo).raw(['tag', '-d', '--', n])
+  // Only a local delete can be undone (a remote one would need another push)
+  if (!fromRemote) history.record(repo, { kind: 'deleteTag', name: n, object })
+  return remote ? { remote } : null
+}
+
+/** Push one tag, or every tag when `name` is omitted */
+export async function pushTags(repo: string, name?: string): Promise<TagPushResult> {
+  const n = name === undefined ? null : await assertTagName(repo, name)
+  if (n && !(await refHash(repo, `refs/tags/${n}`))) throw new Error(`Tag '${n}' not found`)
+  const remote = await defaultRemote(repo)
+  try {
+    await netGit(repo).raw(n ? ['push', remote, `refs/tags/${n}`] : ['push', remote, '--tags'])
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/already exists/i.test(msg) && /rejected/i.test(msg)) {
+      throw new Error(`${remote} already has ${n ? `a tag '${n}'` : 'some of these tags'} pointing somewhere else.\n\n${msg}`)
+    }
+    throw friendlyRemoteError(err, 'push')
+  }
+  return { remote }
+}
+
+// ---------------------------------------------------------------------------
+// Discard changes
+// ---------------------------------------------------------------------------
+
+/**
+ * Throw away unstaged changes: tracked files go back to their staged (or committed) version,
+ * untracked files are deleted. Staged changes are kept. This cannot be undone.
+ */
+export async function discard(repo: string, files: string[]) {
+  const list = assertPaths(repo, files)
+  const status = await getStatus(repo)
+  const byPath = new Map(status.unstaged.map((f) => [f.path, f]))
+  const tracked: string[] = []
+  const untracked: string[] = []
+  for (const f of list) {
+    const change = byPath.get(f)
+    if (!change) continue // nothing to discard (already clean)
+    if (change.type === 'conflicted') throw new Error(`'${f}' has a conflict — resolve it instead of discarding`)
+    ;(change.type === 'untracked' ? untracked : tracked).push(f)
+  }
+  const g = git(repo)
+  if (tracked.length) await g.raw(['checkout', '--', ...tracked])
+  // -f only removes the listed files; ignored files are never touched (no -x)
+  if (untracked.length) await g.raw(['clean', '-f', '-q', '--', ...untracked])
 }
 
 // ---------------------------------------------------------------------------
@@ -807,7 +1508,22 @@ async function reverse(repo: string, op: Op) {
       if (await refHash(repo, `refs/heads/${op.name}`)) stale(op, `a branch named '${op.name}' exists again`)
       await g.raw(['branch', op.name, op.hash])
       return
+    case 'headMove':
+      await expectBranch(repo, op, op.branch)
+      await expectHead(repo, op, op.after)
+      await g.raw(['reset', '-q', `--${op.mode}`, op.before])
+      return
+    case 'dropStash':
+      if ((await getStashes(repo)).some((st) => st.commit === op.hash)) stale(op, 'that stash is already in the list')
+      await g.raw(['stash', 'store', '-m', op.message, op.hash])
+      return
+    case 'deleteTag':
+      if (await refHash(repo, `refs/tags/${op.name}`)) stale(op, `a tag named '${op.name}' exists again`)
+      // update-ref restores annotated tags exactly (same tag object, message and tagger)
+      await g.raw(['update-ref', `refs/tags/${op.name}`, op.object, ''])
+      return
     case 'pull':
+    case 'merge':
       await expectBranch(repo, op, op.branch)
       await expectHead(repo, op, op.after)
       // --keep refuses instead of overwriting local changes
@@ -846,7 +1562,30 @@ async function reapply(repo: string, op: Op) {
       await g.raw(['branch', '-D', '--', op.name])
       return
     }
+    case 'headMove':
+      await expectBranch(repo, op, op.branch)
+      await expectHead(repo, op, op.before)
+      await g.raw(['reset', '-q', `--${op.mode}`, op.after])
+      return
+    case 'dropStash': {
+      const st = (await getStashes(repo)).find((x) => x.commit === op.hash)
+      if (!st) stale(op, 'that stash is no longer in the list')
+      await g.raw(['stash', 'drop', '-q', st.ref])
+      return
+    }
+    case 'deleteTag': {
+      let cur = ''
+      try {
+        cur = (await g.raw(['rev-parse', '--verify', '--quiet', `refs/tags/${op.name}`])).trim()
+      } catch {
+        /* missing */
+      }
+      if (cur !== op.object) stale(op, `'${op.name}' has changed since`)
+      await g.raw(['tag', '-d', '--', op.name])
+      return
+    }
     case 'pull':
+    case 'merge':
       await expectBranch(repo, op, op.branch)
       await expectHead(repo, op, op.before)
       await g.raw(['reset', '--keep', op.after])
@@ -854,10 +1593,16 @@ async function reapply(repo: string, op: Op) {
   }
 }
 
+async function assertNoOperation(repo: string, action: string) {
+  const op = await getOperation(repo)
+  if (op) throw new Error(`Can't ${action} while a ${OPERATION_LABEL[op.kind]} is in progress — finish or abort it first`)
+}
+
 /** Undo the latest operation. Returns its description. */
 export async function undo(repo: string): Promise<string> {
   const op = history.peekUndo(repo)
   if (!op) throw new Error('Nothing to undo')
+  await assertNoOperation(repo, 'undo')
   try {
     await reverse(repo, op)
   } catch (err) {
@@ -873,6 +1618,7 @@ export async function undo(repo: string): Promise<string> {
 export async function redo(repo: string): Promise<string> {
   const op = history.peekRedo(repo)
   if (!op) throw new Error('Nothing to redo')
+  await assertNoOperation(repo, 'redo')
   try {
     await reapply(repo, op)
   } catch (err) {

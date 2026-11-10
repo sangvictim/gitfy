@@ -36,6 +36,26 @@ export type Op =
     }
   | { kind: 'deleteBranch'; name: string; hash: string }
   | { kind: 'pull'; branch: string; before: string; after: string }
+  /**
+   * The branch (or detached HEAD) was moved from `before` to `after` by a rebase, cherry-pick,
+   * revert, reset or amend. Undo / redo move it back with `git reset --<mode>`.
+   */
+  | {
+      kind: 'headMove'
+      /** e.g. "cherry-pick of abc1234" */
+      what: string
+      branch: string | null
+      before: string
+      after: string
+      /** keep = also update the working tree (refusing to overwrite local changes); soft / mixed = keep it */
+      mode: 'keep' | 'soft' | 'mixed'
+    }
+  /** A dropped stash — its commit still exists, so it can be stored back */
+  | { kind: 'dropStash'; hash: string; message: string }
+  /** A deleted tag; `object` is the tag object (annotated) or commit (lightweight) it pointed to */
+  | { kind: 'deleteTag'; name: string; object: string }
+  /** A merge that finished (fast-forward, clean, or after resolving conflicts) */
+  | { kind: 'merge'; branch: string; from: string; before: string; after: string }
 
 const MAX_HISTORY = 50
 
@@ -51,6 +71,14 @@ export function describe(op: Op): string {
       return `delete branch ${op.name}`
     case 'pull':
       return `pull into ${op.branch}`
+    case 'merge':
+      return `merge of ${op.from} into ${op.branch}`
+    case 'headMove':
+      return op.what
+    case 'dropStash':
+      return `drop of stash "${op.message.length > 40 ? op.message.slice(0, 40) + '…' : op.message}"`
+    case 'deleteTag':
+      return `delete tag ${op.name}`
   }
 }
 
