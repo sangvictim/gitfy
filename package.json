@@ -1,7 +1,7 @@
 {
   "name": "gitfy",
   "productName": "Gitfy",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Lightweight cross-platform Git GUI client",
   "author": "Setyo Purnomo <sangvictim@gmail.com>",
   "private": true,
