@@ -12,10 +12,18 @@ const MODES: { mode: ResetMode; title: string; hint: string }[] = [
 ]
 
 /** Move the current branch to a commit */
-export function ResetModal({ commit, onClose }: { commit: Commit; onClose: () => void }) {
+export function ResetModal({
+  commit,
+  initialMode = 'mixed',
+  onClose,
+}: {
+  commit: Commit
+  initialMode?: ResetMode
+  onClose: () => void
+}) {
   const status = useRepoStore((s) => s.status)
   const reset = useRepoStore((s) => s.reset)
-  const [mode, setMode] = useState<ResetMode>('mixed')
+  const [mode, setMode] = useState<ResetMode>(initialMode)
   const info = useRewriteInfo(commit.hash)
   const branch = status?.branch ?? 'HEAD'
   const dirty = (status?.staged.length ?? 0) + (status?.unstaged.length ?? 0)

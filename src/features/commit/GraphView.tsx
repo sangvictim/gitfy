@@ -4,6 +4,7 @@ import { cx, relativeTime } from '../../lib/format'
 import { commitMatches } from '../../lib/search'
 import { useRepoStore } from '../../store/repo.store'
 import type { Commit, CommitRef } from '../../types/git'
+import { CommitContextMenu, type ContextTarget } from './CommitContextMenu'
 import { GraphFilter } from './GraphFilter'
 import { computeGraph, graphColor, WIP_HASH, type GraphRow as GraphRowLayout } from './graph'
 import { GraphCell, graphWidthFor, ROW_H } from './GraphCell'
@@ -165,6 +166,15 @@ export function GraphView() {
 
   // Stable callbacks so memoised rows don't re-render when the parent does
   const onSelectRow = useCallback((d: RowData) => select(d.isWip ? 'wip' : d.commit.hash), [select])
+  const [ctx, setCtx] = useState<ContextTarget | null>(null)
+  // Right-click selects the row (so the panel matches) and opens its menu
+  const onContextRow = useCallback(
+    (d: RowData, x: number, y: number) => {
+      select(d.isWip ? 'wip' : d.commit.hash)
+      setCtx({ commit: d.commit, isWip: d.isWip, x, y })
+    },
+    [select],
+  )
   const onSwitchBadge = useCallback((b: RefBadge) => {
     const { busy, checkout } = useRepoStore.getState()
     if (busy || b.tag || b.detached) return
@@ -248,12 +258,14 @@ export function GraphView() {
                 isHead={d.commit.hash === headHash}
                 dimmed={!!matches && !isSel && !matches.has(d.commit.hash)}
                 onSelect={onSelectRow}
+                onContext={onContextRow}
                 onSwitchBadge={onSwitchBadge}
               />
             )
           })}
         </div>
       </div>
+      {ctx && <CommitContextMenu key={`${ctx.commit.hash}-${ctx.x}-${ctx.y}`} target={ctx} onDone={() => setCtx(null)} />}
     </div>
   )
 }
@@ -280,6 +292,7 @@ interface GraphRowProps {
   isHead: boolean
   dimmed: boolean
   onSelect: (d: RowData) => void
+  onContext: (d: RowData, x: number, y: number) => void
   onSwitchBadge: (b: RefBadge) => void
 }
 
@@ -293,6 +306,7 @@ const GraphRow = memo(function GraphRow({
   isHead,
   dimmed,
   onSelect,
+  onContext,
   onSwitchBadge,
 }: GraphRowProps) {
   const { commit: c, color, badges } = d
@@ -302,6 +316,10 @@ const GraphRow = memo(function GraphRow({
       role="option"
       aria-selected={isSelected}
       onClick={() => onSelect(d)}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        onContext(d, e.clientX, e.clientY)
+      }}
       className={cx(
         'group absolute top-0 left-0 grid w-full cursor-default items-center',
         isSelected ? 'bg-accent/25' : 'hover:bg-panel-2',
