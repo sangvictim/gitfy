@@ -14,7 +14,7 @@ Browse history, stage changes, review diffs, commit, and sync with your remotes 
 ![TypeScript](https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwindcss&logoColor=white)
 ![Tested on](https://img.shields.io/badge/tested-Debian%20%2F%20Ubuntu-success)
-![Version](https://img.shields.io/badge/version-0.0.1-lightgrey)
+![Version](https://img.shields.io/badge/version-0.0.3-lightgrey)
 
 </div>
 
