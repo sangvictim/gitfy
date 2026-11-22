@@ -1,13 +1,30 @@
 import { app, dialog, type BrowserWindow } from 'electron'
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { Settings, SshKeyInfo, SshSettings, SshTestResult } from '../../src/types/git'
 import { askpass } from './askpass.service'
+import { writeFileAtomic } from './fsutil'
 
 const DEFAULTS: Settings = {
   ssh: { useAgent: false, privateKey: null, publicKey: null },
+}
+
+/**
+ * The ssh-agent socket. SSH_AUTH_SOCK is inherited once at start-up: when the agent restarts on a
+ * new socket (common with desktop keyrings), look for the usual per-user agent sockets instead.
+ */
+export function agentSocket(): string | undefined {
+  const cur = process.env.SSH_AUTH_SOCK
+  if (process.platform === 'win32' || (cur && existsSync(cur))) return cur
+  const run = process.env.XDG_RUNTIME_DIR
+  const candidates = [
+    ...(run ? ['ssh-agent.socket', 'gcr/ssh', 'keyring/ssh', 'openssh_agent'].map((p) => path.join(run, p)) : []),
+    path.join(os.homedir(), '.1password', 'agent.sock'),
+  ]
+  return candidates.find((p) => existsSync(p)) ?? cur
 }
 
 /** Run a program without a shell; resolves with exit code + output instead of throwing */
@@ -18,7 +35,9 @@ function run(
   extraEnv: Record<string, string> = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    execFile(file, args, { timeout: timeoutMs, env: { ...process.env, ...extraEnv } }, (err, stdout, stderr) => {
+    const sock = agentSocket()
+    const env = { ...process.env, ...(sock ? { SSH_AUTH_SOCK: sock } : {}), ...extraEnv }
+    execFile(file, args, { timeout: timeoutMs, env, windowsHide: true }, (err, stdout, stderr) => {
       // err.code is the exit status (number), or a string such as 'ENOENT' when the program is missing
       const raw = (err as { code?: number | string } | null)?.code
       const code = !err ? 0 : raw === 'ENOENT' ? 127 : typeof raw === 'number' ? raw : 1
@@ -78,8 +97,7 @@ class SettingsService {
   }
 
   private async save() {
-    await fs.mkdir(path.dirname(this.file), { recursive: true })
-    await fs.writeFile(this.file, JSON.stringify(this.settings, null, 2))
+    await writeFileAtomic(this.file, JSON.stringify(this.settings, null, 2))
   }
 
   private async updateSsh(partial: Partial<SshSettings>) {
@@ -177,6 +195,9 @@ class SettingsService {
    */
   sshCommand(): string {
     const parts = ['ssh', '-o StrictHostKeyChecking=accept-new', '-o ConnectTimeout=20']
+    // Without Gitfy's dialog ssh would wait for a passphrase on a console nobody sees (hidden on
+    // Windows) until the idle timeout: fail right away instead (ssh-agent keys still work)
+    if (!askpass.available) parts.push('-o BatchMode=yes')
     const { useAgent, privateKey } = this.settings.ssh
     if (!useAgent && privateKey) parts.push(`-i ${shQuote(privateKey)}`, '-o IdentitiesOnly=yes')
     return parts.join(' ')
@@ -193,7 +214,7 @@ class SettingsService {
     if (r.code === 127) return { ok: false, message: 'ssh was not found. Install OpenSSH (openssh-client).' }
     const out = (r.stdout + '\n' + r.stderr).trim()
     // GitHub answers "Hi <user>! You've successfully authenticated…" (exit 1, no shell access)
-    if (r.code !== 0 && askpass.consumeCancelled()) return { ok: false, message: 'Cancelled — no passphrase was entered.' }
+    if (r.code !== 0 && /gitfy-askpass: cancelled/.test(r.stderr)) return { ok: false, message: 'Cancelled — no passphrase was entered.' }
     if (/successfully authenticated|Welcome to GitLab|authenticated via/i.test(out)) {
       return { ok: true, message: out.split('\n').find((l) => /authenticated|Welcome/i.test(l))?.trim() ?? out }
     }

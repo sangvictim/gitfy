@@ -35,15 +35,19 @@ c.on('data', (d) => {
   try { r = JSON.parse(buf.slice(0, i)) } catch { process.exit(1) }
   c.end()
   if (r && r.ok && typeof r.value === 'string') { process.stdout.write(r.value + '\\n'); process.exit(0) }
+  // Marks this command's failure as a cancel (read by Gitfy from git's error output)
+  process.stderr.write('gitfy-askpass: cancelled\\n')
   process.exit(1)
 })
-c.on('error', () => process.exit(1))
+c.on('error', (e) => { process.stderr.write('gitfy-askpass: unreachable (' + (e && e.code) + ')\\n'); process.exit(1) })
 setTimeout(() => process.exit(1), 10 * 60 * 1000).unref()
 `
 
 const shQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
 
 type Asker = (req: AskpassRequest) => Promise<{ value: string | null; remember: boolean }>
+/** Withdraw a request whose ssh / git process went away (timed out, killed) before it was answered */
+type Dismisser = (id: number) => void
 
 
 class AskpassService {
@@ -52,9 +56,10 @@ class AskpassService {
   private scriptPath = ''
   private server: net.Server | null = null
   private asker: Asker | null = null
+  private dismiss: Dismisser | null = null
   private nextId = 1
   /** "Remember for this session" answers, keyed by prompt (e.g. the key file in the prompt) */
-  private remembered = new Map<string, string>()
+  private remembered = new Map<string, { value: string; kind: AskpassRequest['kind'] }>()
   /** Which process each prompt was last answered for: the same process asking again = wrong answer */
   private answeredFor = new Map<string, number>()
 
@@ -62,9 +67,35 @@ class AskpassService {
   async start() {
     const dir = path.join(app.getPath('userData'), 'askpass')
     await fs.mkdir(dir, { recursive: true, mode: 0o700 })
-    const helper = path.join(dir, 'askpass-helper.cjs')
+    /** Gitfy processes that are no longer running (crashed): their files can go */
+    const dead = (pid: number) => {
+      if (!pid || pid === process.pid) return false
+      try {
+        process.kill(pid, 0)
+        return false
+      } catch (err) {
+        return (err as NodeJS.ErrnoException).code === 'ESRCH'
+      }
+    }
+    // Leftovers of crashed instances
+    for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
+      if (dead(Number(/^askpass-(\d+)-[0-9a-f]+\.(sh|cjs)$/.exec(name)?.[1]))) {
+        await fs.rm(path.join(dir, name), { force: true }).catch(() => {})
+      }
+    }
+    for (const name of await fs.readdir(os.tmpdir()).catch(() => [] as string[])) {
+      if (dead(Number(/^gitfy-askpass-(\d+)-[0-9a-f]+\.sock$/.exec(name)?.[1]))) {
+        await fs.rm(path.join(os.tmpdir(), name), { force: true }).catch(() => {})
+      }
+    }
+
+    // One helper + script per running instance: process.execPath is only valid while this instance
+    // runs (an AppImage's is a temporary mount), so a shared script would break when another
+    // instance — e.g. a newer version opened once — rewrites it and then quits
+    const id = `${process.pid}-${randomBytes(4).toString('hex')}`
+    const helper = path.join(dir, `askpass-${id}.cjs`)
     await fs.writeFile(helper, HELPER_JS, { mode: 0o600 })
-    this.scriptPath = path.join(dir, 'askpass.sh')
+    this.scriptPath = path.join(dir, `askpass-${id}.sh`)
     await fs.writeFile(
       this.scriptPath,
       `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${shQuote(process.execPath)} ${shQuote(helper)} "$@"\n`,
@@ -72,36 +103,35 @@ class AskpassService {
     )
     await fs.chmod(this.scriptPath, 0o700)
 
-    // Remove sockets left behind by Gitfy processes that crashed (their pid no longer runs)
-    for (const name of await fs.readdir(os.tmpdir()).catch(() => [] as string[])) {
-      const pid = Number(/^gitfy-askpass-(\d+)-[0-9a-f]+\.sock$/.exec(name)?.[1])
-      if (!pid || pid === process.pid) continue
-      try {
-        process.kill(pid, 0)
-      } catch {
-        await fs.rm(path.join(os.tmpdir(), name), { force: true }).catch(() => {})
-      }
-    }
-
     this.token = randomBytes(32).toString('hex')
-    // Short path in the temp dir (unix socket paths are limited to ~100 characters)
-    this.socketPath = path.join(os.tmpdir(), `gitfy-askpass-${process.pid}-${randomBytes(4).toString('hex')}.sock`)
-    await fs.rm(this.socketPath, { force: true })
+    // Windows: a named pipe. Elsewhere a short path in the temp dir (unix socket paths are limited
+    // to ~100 characters)
+    const win = process.platform === 'win32'
+    this.socketPath = win ? `\\\\.\\pipe\\gitfy-askpass-${id}` : path.join(os.tmpdir(), `gitfy-askpass-${id}.sock`)
+    if (!win) await fs.rm(this.socketPath, { force: true })
     this.server = net.createServer((conn) => this.handle(conn))
     await new Promise<void>((resolve, reject) => {
       this.server!.once('error', reject)
       this.server!.listen(this.socketPath, () => resolve())
     })
-    await fs.chmod(this.socketPath, 0o600)
+    if (!win) await fs.chmod(this.socketPath, 0o600)
     app.on('will-quit', () => {
       this.server?.close()
-      fs.rm(this.socketPath, { force: true }).catch(() => {})
+      for (const f of win ? [this.scriptPath, helper] : [this.socketPath, this.scriptPath, helper]) {
+        fs.rm(f, { force: true }).catch(() => {})
+      }
     })
   }
 
   /** How to show a prompt to the user (set by main once the window exists) */
-  setAsker(asker: Asker) {
+  setAsker(asker: Asker, dismiss?: Dismisser) {
     this.asker = asker
+    this.dismiss = dismiss ?? null
+  }
+
+  /** Whether prompts can be shown (the helper's server is listening) */
+  get available() {
+    return !!this.server
   }
 
   /** Environment for git / ssh so that their prompts come to Gitfy */
@@ -116,19 +146,15 @@ class AskpassService {
     }
   }
 
-  private cancelledAt = 0
-
-  /** True (once) if the user dismissed a prompt in the last minute — explains the failure that follows */
-  consumeCancelled(): boolean {
-    const recent = Date.now() - this.cancelledAt < 60_000
-    this.cancelledAt = 0
-    return recent
-  }
-
-  /** Forget remembered passphrases / passwords */
-  clear() {
-    this.remembered.clear()
-    this.answeredFor.clear()
+  /** Forget remembered answers (all, or only those of some kinds, e.g. HTTPS username / password) */
+  clear(kinds?: AskpassRequest['kind'][]) {
+    for (const [prompt, r] of this.remembered) {
+      if (!kinds || kinds.includes(r.kind)) {
+        this.remembered.delete(prompt)
+        this.answeredFor.delete(prompt)
+      }
+    }
+    if (!kinds) this.answeredFor.clear()
   }
 
   private handle(conn: net.Socket) {
@@ -152,6 +178,8 @@ class AskpassService {
       const prompt = typeof msg.prompt === 'string' ? msg.prompt.slice(0, 500) : ''
 
       const asker = typeof msg.asker === 'number' ? msg.asker : -1
+      // The helper (and the ssh / git behind it) went away: take its dialog down
+      conn.once('close', () => this.dismiss?.(id))
       const value = await this.answer(id, prompt, asker, () => conn.destroyed)
       if (!conn.destroyed) conn.end(JSON.stringify(value === null ? { ok: false } : { ok: true, value }) + '\n')
     })
@@ -165,7 +193,7 @@ class AskpassService {
     const cached = this.remembered.get(prompt)
     if (cached !== undefined) {
       this.answeredFor.set(prompt, asker)
-      return cached
+      return cached.value
     }
     if (!this.asker || gone()) return null
 
@@ -179,13 +207,12 @@ class AskpassService {
             ? 'confirm'
             : 'text'
     const { value, remember } = await this.asker({ id, prompt: prompt.trim(), kind, retry })
-    if (value === null) {
-      this.cancelledAt = Date.now()
+    if (value === null || gone()) {
       this.answeredFor.delete(prompt)
       return null
     }
     this.answeredFor.set(prompt, asker)
-    if (remember && kind !== 'confirm') this.remembered.set(prompt, value)
+    if (remember && kind !== 'confirm') this.remembered.set(prompt, { value, kind })
     return value
   }
 }

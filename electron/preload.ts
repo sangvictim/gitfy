@@ -75,6 +75,14 @@ const api = {
     },
     reply: (id: number, value: string | null, remember: boolean) =>
       ipcRenderer.send('askpass:reply', { id, value, remember }),
+    /** A request was withdrawn (its ssh / git process went away) */
+    onDismiss: (cb: (id: number) => void) => {
+      const listener = (_e: unknown, id: number) => cb(id)
+      ipcRenderer.on('askpass:dismiss', listener)
+      return () => {
+        ipcRenderer.removeListener('askpass:dismiss', listener)
+      }
+    },
   },
   /** Global settings */
   settings: {
@@ -88,7 +96,7 @@ const api = {
   },
   /** Every git call takes the repository root path of the tab it belongs to */
   git: {
-    status: (repo: string) => invoke<RepoStatus>('git:status', repo),
+    status: (repo: string, quick?: boolean) => invoke<RepoStatus>('git:status', repo, quick),
     stage: (repo: string, files: string[]) => invoke<void>('git:stage', repo, files),
     stageAll: (repo: string) => invoke<void>('git:stageAll', repo),
     unstage: (repo: string, files: string[]) => invoke<void>('git:unstage', repo, files),

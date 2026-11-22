@@ -20,20 +20,36 @@ export function CommitForm() {
   const hasCommits = useRepoStore((s) => s.commits.length > 0)
   const busy = useRepoStore((s) => s.busy)
   const git = useActiveGit()
-  const [amend, setAmend] = useState(false)
+  // Continue the message typed before the panel was closed / the tab was switched away
+  const [saved] = useState(() => useRepoStore.getState().commitDraft)
+  const [amend, setAmend] = useState(saved?.amend ?? false)
   /** What was typed before switching to amend, restored when switching back */
-  const draft = useRef<{ summary: string; description: string } | null>(null)
+  const draft = useRef<{ summary: string; description: string } | null>(saved?.beforeAmend ?? null)
   const amendInfo = useRewriteInfo(amend ? 'HEAD~1' : null)
-  const [summary, setSummary] = useState('')
-  const [description, setDescription] = useState('')
-  const [target, setTarget] = useState<Target>('current')
-  const [newBranch, setNewBranch] = useState('')
+  const [summary, setSummary] = useState(saved?.summary ?? '')
+  const [description, setDescription] = useState(saved?.description ?? '')
+  const [target, setTarget] = useState<Target>(saved?.target ?? 'current')
+  const [newBranch, setNewBranch] = useState(saved?.newBranch ?? '')
 
   const op = status?.operation ?? null
   const merging = op?.kind === 'merge'
 
   // During a merge, start from the message git prepared ("Merge branch 'x' into y"); clear it afterwards
-  const prefilled = useRef<string | null>(null)
+  const prefilled = useRef<string | null>(saved?.prefilled ?? null)
+
+  // Keep the draft in this tab's session when the form goes away (WIP panel closed, tab switched)
+  const latest = useRef({ summary, description, target, newBranch, amend })
+  latest.current = { summary, description, target, newBranch, amend }
+  useEffect(() => {
+    const tabId = useRepoStore.getState().activeTabId
+    return () => {
+      const d = latest.current
+      const empty = !d.summary && !d.description && !d.newBranch && d.target === 'current' && !d.amend
+      useRepoStore
+        .getState()
+        .saveCommitDraft(tabId, empty ? null : { ...d, beforeAmend: draft.current, prefilled: prefilled.current })
+    }
+  }, [])
   useEffect(() => {
     const msg = merging ? op?.message : null
     if (msg && msg !== prefilled.current) {

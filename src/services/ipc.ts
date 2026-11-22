@@ -48,7 +48,8 @@ export const ipc = {
 export function gitFor(repo: string) {
   const g = () => api().git
   return {
-    status: () => unwrap(g().status(repo)),
+    /** `quick`: for polling — doesn't refresh the index (never holds its lock) */
+    status: (quick?: boolean) => unwrap(g().status(repo, quick)),
     stage: (files: string[]) => unwrap(g().stage(repo, files)),
     stageAll: () => unwrap(g().stageAll(repo)),
     unstage: (files: string[]) => unwrap(g().unstage(repo, files)),

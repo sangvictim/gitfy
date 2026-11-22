@@ -13,6 +13,8 @@ export type Op =
       /** HEAD before the commit (null = it was the first commit) */
       parent: string | null
       subject: string
+      /** First commit on a branch name given to the unborn branch (commit to a new branch): its old name */
+      renamedFrom?: string
     }
   | {
       kind: 'checkout'
@@ -34,7 +36,7 @@ export type Op =
       prev: string | null
       prevDetached: boolean
     }
-  | { kind: 'deleteBranch'; name: string; hash: string }
+  | { kind: 'deleteBranch'; name: string; hash: string; upstream?: { remote: string; merge: string } }
   | { kind: 'pull'; branch: string; before: string; after: string }
   /**
    * The branch (or detached HEAD) was moved from `before` to `after` by a rebase, cherry-pick,

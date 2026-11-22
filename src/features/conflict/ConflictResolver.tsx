@@ -99,6 +99,7 @@ export function ConflictResolver({ path }: { path: string }) {
     isTextConflict(detail.kind) &&
     !detail.binary &&
     !detail.tooLarge &&
+    !detail.note &&
     detail.ours !== null &&
     detail.theirs !== null
   const { dir, name } = splitPath(path)
@@ -448,7 +449,9 @@ function WholeFileChoice({
   disabled: boolean
   onResolve: (r: ConflictResolution) => void
 }) {
-  const reason = detail.binary
+  const reason = detail.note
+    ? detail.note
+    : detail.binary
     ? "This is a binary file, so its changes can't be combined line by line."
     : detail.tooLarge
       ? 'This file is too large to edit here.'

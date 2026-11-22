@@ -46,7 +46,13 @@ export function DiffPanel({ target }: { target: FileDiffTarget }) {
   }, [target, status, git])
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpenDiff(null)
+    // Not when the Esc is for something else: a dialog or menu on top, or Monaco (find widget,
+    // suggestions…), which marks the keys it handles with preventDefault
+    const onKey = (e: KeyboardEvent) =>
+      e.key === 'Escape' &&
+      !e.defaultPrevented &&
+      !document.querySelector('[role=dialog]:not(.monaco-editor *), [role=menu]') &&
+      setOpenDiff(null)
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [setOpenDiff])

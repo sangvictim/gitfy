@@ -21,7 +21,8 @@ export function AppLayout() {
   // Keep the status "real-time": poll while the window is visible, full refresh on focus
   useEffect(() => {
     const { refreshStatus, refreshAll } = useRepoStore.getState()
-    const tick = () => document.visibilityState === 'visible' && refreshStatus()
+    // Not while this tab runs an operation (pull, checkout…): it reloads everything when it ends
+    const tick = () => document.visibilityState === 'visible' && !useRepoStore.getState().busy && refreshStatus()
     const id = window.setInterval(tick, STATUS_POLL_MS)
     const onFocus = () => refreshAll()
     window.addEventListener('focus', onFocus)

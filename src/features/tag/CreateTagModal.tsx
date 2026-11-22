@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from '../../components/Button'
 import { Field, Input, TextArea } from '../../components/Input'
 import { Modal } from '../../components/Modal'
@@ -19,6 +19,8 @@ export function CreateTagModal({ target, onClose }: { target?: string; onClose: 
   const [message, setMessage] = useState('')
   const [push, setPush] = useState(false)
   const [running, setRunning] = useState(false)
+  /** Set synchronously: a second Enter can arrive before `running` re-renders */
+  const inFlight = useRef(false)
 
   const commit = target ? commits.find((c) => c.hash === target) : commits.find((c) => c.refs.some((r) => r.current || r.type === 'head'))
   const n = name.trim()
@@ -31,10 +33,12 @@ export function CreateTagModal({ target, onClose }: { target?: string; onClose: 
         : null
 
   const submit = async () => {
-    if (!n || error) return
+    if (!n || error || inFlight.current) return
+    inFlight.current = true
     setRunning(true)
     const ok = await createTag(n, target, message)
     if (ok && push) await pushTags(n)
+    inFlight.current = false
     setRunning(false)
     if (ok) onClose()
   }

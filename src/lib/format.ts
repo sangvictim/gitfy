@@ -19,7 +19,9 @@ export function languageFor(path: string): string {
 
 /** "a few seconds ago", "5 minutes ago", "an hour ago", "21 hours ago", "yesterday", "3 days ago", "a week ago"… */
 export function relativeTime(iso: string): string {
-  const sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
+  const time = new Date(iso).getTime()
+  if (Number.isNaN(time)) return 'unknown date'
+  const sec = Math.max(0, (Date.now() - time) / 1000)
   const min = sec / 60
   const hr = min / 60
   const day = hr / 24

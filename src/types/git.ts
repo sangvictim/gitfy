@@ -84,6 +84,8 @@ export interface ConflictDetail {
   theirs: string | null
   binary: boolean
   tooLarge: boolean
+  /** Set when the file can't be merged line by line here (submodule, symlink, not UTF-8…): why */
+  note?: string
 }
 
 /** 'ours' / 'theirs' take that side's whole file (deleting it if that side deleted it) */

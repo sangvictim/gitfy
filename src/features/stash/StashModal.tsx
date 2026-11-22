@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from '../../components/Button'
 import { Field, Input } from '../../components/Input'
 import { Modal } from '../../components/Modal'
@@ -11,13 +11,18 @@ export function StashModal({ onClose }: { onClose: () => void }) {
   const [message, setMessage] = useState('')
   const [untracked, setUntracked] = useState(true)
   const [running, setRunning] = useState(false)
+  /** Set synchronously: a second Enter can arrive before `running` re-renders */
+  const inFlight = useRef(false)
 
   const files = new Set([...(status?.staged ?? []), ...(status?.unstaged ?? [])].map((f) => f.path)).size
   const untrackedCount = status?.unstaged.filter((f) => f.type === 'untracked').length ?? 0
 
   const submit = async () => {
+    if (inFlight.current || files === 0) return
+    inFlight.current = true
     setRunning(true)
     const ok = await stashPush(message, untracked)
+    inFlight.current = false
     setRunning(false)
     if (ok) onClose()
   }

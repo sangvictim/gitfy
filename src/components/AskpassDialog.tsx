@@ -28,6 +28,7 @@ export function AskpassDialog() {
   const req = queue[0]
 
   useEffect(() => window.gitfy.askpass.onRequest((r) => setQueue((q) => [...q, r])), [])
+  useEffect(() => window.gitfy.askpass.onDismiss((id) => setQueue((q) => q.filter((r) => r.id !== id))), [])
 
   useEffect(() => {
     setValue('')

@@ -55,6 +55,22 @@ interface Session {
   /** Narrows the graph to one branch / author */
   logFilter: LogFilter
   submodules: SubmoduleInfo[]
+  /** Label of a long-running operation in this tab (clone, checkout, push…) or null */
+  busy: string | null
+  /** The commit form's unsent message, kept while the WIP panel is closed or the tab is in the background */
+  commitDraft: CommitDraft | null
+}
+
+export interface CommitDraft {
+  summary: string
+  description: string
+  target: 'current' | 'new'
+  newBranch: string
+  amend: boolean
+  /** What was typed before switching to amend */
+  beforeAmend: { summary: string; description: string } | null
+  /** The merge message the form was prefilled with */
+  prefilled: string | null
 }
 
 export interface Tab {
@@ -72,8 +88,6 @@ interface RepoState extends Session {
   activeTabId: string
   parked: Record<string, Session>
   recent: RepoInfo[]
-  /** Label of a long-running operation (clone, checkout...) or null */
-  busy: string | null
 
   /** Reopen the repositories that were in tabs when the app was last closed (call once at startup) */
   restoreTabs: () => Promise<void>
@@ -85,6 +99,7 @@ interface RepoState extends Session {
   setOpenDiff: (d: DiffTarget | null) => void
   focusCommit: (hash: string) => void
   setSearch: (q: string) => void
+  saveCommitDraft: (tabId: string, draft: CommitDraft | null) => void
 
   loadRecent: () => Promise<void>
   removeRecent: (path: string) => Promise<void>
@@ -168,6 +183,8 @@ const emptySession = (repo: RepoInfo | null = null): Session => ({
   history: { undo: null, redo: null },
   logFilter: { branch: null, author: null },
   submodules: [],
+  busy: null,
+  commitDraft: null,
 })
 
 const SESSION_KEYS = Object.keys(emptySession()) as (keyof Session)[]
@@ -251,11 +268,22 @@ export const useRepoStore = create<RepoState>((set, get) => {
     patch(tabId, { openDiff: moved ? { kind: 'working', path: moved.path, staged: !d.staged, from: moved.from } : null })
   }
 
-  const loadStatus = async (tabId: string) => {
+  /** Latest request per tab and kind: an older response that arrives later must not overwrite a newer one */
+  const latest = new Map<string, number>()
+  let requestCounter = 0
+  const begin = (key: string) => {
+    const n = ++requestCounter
+    latest.set(key, n)
+    return () => latest.get(key) === n
+  }
+
+  const loadStatus = async (tabId: string, quick = false) => {
     const git = gitOfTab(tabId)
     if (!git) return
+    const current = begin(`status:${tabId}`)
     try {
-      const status = await git.status()
+      const status = await git.status(quick)
+      if (!current()) return
       patch(tabId, { status })
       reconcileDiff(tabId, status)
     } catch (err) {
@@ -273,8 +301,9 @@ export const useRepoStore = create<RepoState>((set, get) => {
     const git = gitOfTab(tabId)
     if (!git) return
     const filter = sessionOf(tabId)?.logFilter
+    const current = begin(`log:${tabId}`)
     const commits = await attempt(() => git.log(undefined, filter))
-    if (commits) patch(tabId, { commits })
+    if (commits && current()) patch(tabId, { commits })
   }
   const loadHistory = async (tabId: string) => {
     const git = gitOfTab(tabId)
@@ -311,16 +340,21 @@ export const useRepoStore = create<RepoState>((set, get) => {
     }
   }
 
-  /** Show a freshly opened repo: reuse its tab if already open, else the empty active tab, else a new tab */
-  const placeRepo = async (repo: RepoInfo) => {
+  /**
+   * Show a freshly opened repo: reuse its tab if already open, else the empty tab the open was
+   * started from (the user may have switched tabs meanwhile), else a new tab
+   */
+  const placeRepo = async (repo: RepoInfo, fromTabId: string) => {
     const s = get()
     const existing = s.tabs.find((t) => t.repo?.path === repo.path)
     if (existing) {
       get().switchTab(existing.id)
       return
     }
-    if (!s.repo) {
-      patch(s.activeTabId, emptySession(repo))
+    const origin = s.tabs.find((t) => t.id === fromTabId && !t.repo) ?? (!s.repo ? { id: s.activeTabId } : null)
+    if (origin) {
+      get().switchTab(origin.id)
+      patch(origin.id, emptySession(repo))
     } else {
       get().newTab()
       patch(get().activeTabId, emptySession(repo))
@@ -348,13 +382,32 @@ export const useRepoStore = create<RepoState>((set, get) => {
     if (head && tabId === get().activeTabId) get().focusCommit(head.hash)
   }
 
-  const withBusy = async <T>(label: string, fn: () => Promise<T>) => {
-    set({ busy: label })
+  /** Operations running per tab: `busy` is cleared only when the last one ends */
+  const running = new Map<string, number>()
+  const withBusy = async <T>(label: string, fn: () => Promise<T>, tabId = get().activeTabId) => {
+    running.set(tabId, (running.get(tabId) ?? 0) + 1)
+    patch(tabId, { busy: label })
     try {
       return await attempt(fn)
     } finally {
-      set({ busy: null })
+      const left = (running.get(tabId) ?? 1) - 1
+      if (left > 0) running.set(tabId, left)
+      else {
+        running.delete(tabId)
+        patch(tabId, { busy: null })
+      }
     }
+  }
+
+  /** The active tab, unless it is busy (e.g. pulling): changing the repository then would race with it */
+  const idle = () => {
+    const a = active()
+    const busy = a && sessionOf(a.tabId)?.busy
+    if (busy) {
+      toast.info(`Wait until "${busy.replace(/…$/, '')}" finishes`)
+      return null
+    }
+    return a
   }
 
   return {
@@ -363,7 +416,6 @@ export const useRepoStore = create<RepoState>((set, get) => {
     activeTabId: firstTabId,
     parked: {},
     recent: [],
-    busy: null,
 
     // ---- tabs -------------------------------------------------------------
     restoreTabs: () => (restoring ??= (async () => {
@@ -446,6 +498,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
     setOpenDiff: (openDiff) => set({ openDiff }),
     focusCommit: (hash) => set({ selected: hash, openDiff: null, focusRequest: { hash, n: ++focusCounter } }),
     setSearch: (search) => set({ search }),
+    saveCommitDraft: (tabId, commitDraft) => patch(tabId, { commitDraft }),
 
     // ---- repositories -------------------------------------------------------
     loadRecent: async () => {
@@ -457,53 +510,57 @@ export const useRepoStore = create<RepoState>((set, get) => {
       if (recent) set({ recent })
     },
     openRepo: async (dir) => {
+      const fromTabId = get().activeTabId
       const repo = await withBusy('Opening repository…', () => ipc.openRepo(dir))
       if (!repo) return false
-      await placeRepo(repo)
+      await placeRepo(repo, fromTabId)
       return true
     },
     initRepo: async (dir) => {
+      const fromTabId = get().activeTabId
       const repo = await withBusy('Initializing repository…', () => ipc.initRepo(dir))
       if (!repo) return false
       toast.success(`Initialized empty repository in ${repo.path}`)
-      await placeRepo(repo)
+      await placeRepo(repo, fromTabId)
       return true
     },
     cloneRepo: async (url, parent, name) => {
+      const fromTabId = get().activeTabId
       const repo = await withBusy('Cloning repository…', () => ipc.cloneRepo(url, parent, name))
       if (!repo) return false
       toast.success(`Cloned into ${repo.path}`)
-      await placeRepo(repo)
+      await placeRepo(repo, fromTabId)
       return true
     },
 
     // ---- refresh (active tab) -----------------------------------------------
-    refreshStatus: () => loadStatus(get().activeTabId),
+    // The 3 s poll: a quick status (other loads refresh the index, keeping this one cheap)
+    refreshStatus: () => loadStatus(get().activeTabId, true),
     refreshBranches: () => loadBranches(get().activeTabId),
     refreshLog: () => loadLog(get().activeTabId),
     refreshAll: () => loadAll(get().activeTabId),
 
     // ---- staging & commit ---------------------------------------------------
     stage: async (files) => {
-      const a = active()
+      const a = idle()
       if (!a) return
       await attempt(() => a.git.stage(files))
       await loadStatus(a.tabId)
     },
     unstage: async (files) => {
-      const a = active()
+      const a = idle()
       if (!a) return
       await attempt(() => a.git.unstage(files))
       await loadStatus(a.tabId)
     },
     stageAll: async () => {
-      const a = active()
+      const a = idle()
       if (!a) return
       await attempt(a.git.stageAll)
       await loadStatus(a.tabId)
     },
     unstageAll: async () => {
-      const a = active()
+      const a = idle()
       if (!a) return
       await attempt(a.git.unstageAll)
       await loadStatus(a.tabId)
@@ -516,6 +573,8 @@ export const useRepoStore = create<RepoState>((set, get) => {
       toast.success(
         newBranch ? `Committed ${hash.slice(0, 7)} to new branch '${newBranch.trim()}'` : `Committed ${hash.slice(0, 7)}`,
       )
+      // The form may have been closed (tab switched) while committing and saved this message as a draft
+      patch(a.tabId, { commitDraft: null })
       if (sessionOf(a.tabId)?.openDiff?.kind === 'working') patch(a.tabId, { openDiff: null })
       await loadAll(a.tabId)
       return true
@@ -544,7 +603,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
       await loadAll(a.tabId)
     },
     createBranch: async (name, checkout) => {
-      const a = active()
+      const a = idle()
       if (!a) return false
       const ok = await attempt(() => a.git.createBranch(name, checkout).then(() => true))
       if (ok) toast.success(`Created branch ${name}`)
@@ -552,7 +611,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
       return !!ok
     },
     deleteBranch: async (name, force) => {
-      const a = active()
+      const a = idle()
       if (!a) return false
       const ok = await attempt(() => a.git.deleteBranch(name, force).then(() => true))
       if (ok) toast.success(`Deleted branch ${name}`)
@@ -624,7 +683,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
       return !!r
     },
     removeRemote: async (name) => {
-      const a = active()
+      const a = idle()
       if (!a) return false
       const ok = await attempt(() => a.git.removeRemote(name).then(() => true))
       if (ok) toast.success(`Removed remote ${name}`)
@@ -642,7 +701,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
       return !!ok
     },
     ignore: async (pattern) => {
-      const a = active()
+      const a = idle()
       if (!a) return false
       const ok = await attempt(() => a.git.addToGitignore(pattern).then(() => true))
       if (ok) toast.success(`Added ${pattern} to .gitignore`)
@@ -672,7 +731,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
     },
     openConflict: (path) => set({ selected: 'wip', openDiff: { kind: 'conflict', path } }),
     resolveConflict: async (path, resolution) => {
-      const a = active()
+      const a = idle()
       if (!a) return false
       const d = sessionOf(a.tabId)?.openDiff
       const wasOpen = d?.kind === 'conflict' && d.path === path
@@ -694,6 +753,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
         a.git.continueOperation(message).then((op) => ({ op })),
       )
       if (still) {
+        patch(a.tabId, { commitDraft: null })
         if (still.op) toast.info(`The ${OPERATION_NAME[still.op.kind]} continued and stopped again — resolve the next conflicts`)
         else toast.success(`${OPERATION_NAME[kind][0].toUpperCase()}${OPERATION_NAME[kind].slice(1)} completed`)
         if (sessionOf(a.tabId)?.openDiff?.kind !== 'commit') patch(a.tabId, { openDiff: null })
@@ -743,7 +803,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
       return !!r
     },
     stashDrop: async (ref) => {
-      const a = active()
+      const a = idle()
       if (!a) return false
       const commit = sessionOf(a.tabId)?.branches?.stashes.find((st) => st.ref === ref)?.commit
       const ok = await attempt(() => a.git.stashDrop(ref).then(() => true))
@@ -759,7 +819,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
 
     // ---- tags ---------------------------------------------------------------
     createTag: async (name, target, message) => {
-      const a = active()
+      const a = idle()
       if (!a) return false
       const ok = await attempt(() => a.git.createTag(name, target, message).then(() => true))
       if (ok) toast.success(`Created tag ${name.trim()}`)
@@ -784,7 +844,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
 
     // ---- discard ------------------------------------------------------------
     discard: async (files) => {
-      const a = active()
+      const a = idle()
       if (!a) return false
       const ok = await attempt(() => a.git.discard(files).then(() => true))
       if (ok) toast.success(`Discarded changes to ${files.length === 1 ? files[0] : `${files.length} files`}`)
@@ -800,7 +860,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
       await loadLog(tabId)
     },
     applyLines: async (path, staged, sel) => {
-      const a = active()
+      const a = idle()
       if (!a) return false
       const ok = await attempt(() => a.git.applyLines(path, staged, sel).then(() => true))
       if (ok) toast.success(staged ? 'Unstaged the selected change' : 'Staged the selected change')
@@ -860,6 +920,7 @@ export const useRepoStore = create<RepoState>((set, get) => {
       const hash = await withBusy('Amending…', () => a.git.amend(summary, description))
       if (hash) {
         toast.success(`Amended the last commit (now ${hash.slice(0, 7)})`)
+        patch(a.tabId, { commitDraft: null })
         if (sessionOf(a.tabId)?.openDiff?.kind === 'working') patch(a.tabId, { openDiff: null })
       }
       await loadAll(a.tabId)

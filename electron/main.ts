@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, session, shell, type IpcMainInvokeEvent } from 'electron'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import * as gitService from './services/git.service'
 import { askpass } from './services/askpass.service'
@@ -21,6 +22,15 @@ import type {
 // ├─ dist/            renderer (index.html)
 // └─ dist-electron/   main.js, preload.js
 process.env.APP_ROOT = path.join(__dirname, '..')
+
+// Apps started from Finder / the Dock get a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin): add
+// Homebrew's folders so git-lfs, credential helpers and a Homebrew git are found like in a terminal
+if (process.platform === 'darwin') {
+  // In front, like `brew shellenv`: a Homebrew git wins over /usr/bin/git (the Xcode tools shim)
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)
+  const brew = ['/opt/homebrew/bin', '/usr/local/bin'].filter((d) => !dirs.includes(d) && existsSync(d))
+  process.env.PATH = [...brew, ...dirs].join(path.delimiter)
+}
 const VITE_DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL
 const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 // Files in public/ are copied to dist/ at build time
@@ -140,6 +150,13 @@ function createWindow() {
     e.preventDefault()
   })
 
+  // A reload / crash of the page drops its dialogs: answer their pending prompts as cancelled
+  win.webContents.on('did-start-loading', () => cancelPendingAskpass())
+  win.webContents.on('render-process-gone', () => cancelPendingAskpass())
+  win.on('closed', () => cancelPendingAskpass())
+  // Re-created later (macOS: Dock icon after the window was closed): no splash this time
+  if (startupDone) win.once('ready-to-show', () => win?.show())
+
   win.webContents.once('did-finish-load', () => setSplashProgress(70))
   // If the UI fails to load or never reports ready, still show the window instead of hanging on the splash
   win.webContents.once('did-fail-load', () => finishStartup())
@@ -198,6 +215,11 @@ function registerIpc() {
   handle('repo:init', (dir: string) => repoService.init(dir))
   handle('repo:clone', (url: string, parent: string, name?: string) => repoService.clone(url, parent, name))
   handle('repo:close', (repo: string) => {
+    try {
+      gitService.forgetRepo(repo)
+    } catch {
+      /* not open */
+    }
     repoService.close(repo)
     history.clear(repo)
   })
@@ -209,7 +231,7 @@ function registerIpc() {
 
   // Every git channel takes the repository root path (one per tab) as its first argument
   // Status & staging
-  handle('git:status', (repo: string) => gitService.getStatus(repo))
+  handle('git:status', (repo: string, quick?: boolean) => gitService.getStatus(repo, quick === true))
   handle('git:stage', (repo: string, files: string[]) => gitService.stage(repo, files))
   handle('git:stageAll', (repo: string) => gitService.stageAll(repo))
   handle('git:unstage', (repo: string, files: string[]) => gitService.unstage(repo, files))
@@ -355,9 +377,17 @@ function registerIpc() {
   ipcMain.on('app:ready', () => finishStartup())
 }
 
+/** Prompts shown in the window, waiting for the user's answer */
+const pendingAskpass = new Map<number, (r: { value: string | null; remember: boolean }) => void>()
+
+function cancelPendingAskpass() {
+  for (const resolve of pendingAskpass.values()) resolve({ value: null, remember: false })
+  pendingAskpass.clear()
+}
+
 /** Show ssh / git credential prompts (e.g. an SSH key passphrase) as a dialog in the window */
 function registerAskpass() {
-  const pending = new Map<number, (r: { value: string | null; remember: boolean }) => void>()
+  const pending = pendingAskpass
   askpass.setAsker(
     (req: AskpassRequest) =>
       new Promise((resolve) => {
@@ -368,6 +398,14 @@ function registerAskpass() {
         win.focus()
         win.webContents.send('askpass:request', req)
       }),
+    // ssh / git gave up waiting (timeout, killed): take the dialog down
+    (id) => {
+      const resolve = pending.get(id)
+      if (!resolve) return
+      pending.delete(id)
+      resolve({ value: null, remember: false })
+      if (win && !win.isDestroyed()) win.webContents.send('askpass:dismiss', id)
+    },
   )
   ipcMain.on('askpass:reply', (e, reply: { id?: unknown; value?: unknown; remember?: unknown }) => {
     if (!win || e.sender !== win.webContents) return

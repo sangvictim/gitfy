@@ -23,10 +23,14 @@ export function SettingsPage() {
   const section: SettingsSection = !repo && stored !== 'ssh' ? 'ssh' : stored
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('[role=dialog]') && close()
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('[role=dialog]:not(.monaco-editor *)') && close()
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [close])
+
+  // Status polling is paused while Preferences is open, and .gitignore / identity may have changed:
+  // reload the tab when leaving
+  useEffect(() => () => void useRepoStore.getState().refreshAll(), [])
 
   return (
     <div className="flex h-full min-h-0">

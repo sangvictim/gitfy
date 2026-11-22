@@ -19,7 +19,7 @@ export function ViewHeader({
 }) {
   useEffect(() => {
     // Esc closes the view — unless a dialog on top of it handles the key
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('[role=dialog]') && onClose()
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !document.querySelector('[role=dialog]:not(.monaco-editor *)') && onClose()
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
